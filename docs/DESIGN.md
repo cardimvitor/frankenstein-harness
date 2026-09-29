@@ -15,7 +15,8 @@ A harness combining DeepSeek Harness (dsh: TypeScript, Cordis plugins, dev previ
 
 - Own code: MIT.
 - Code copied from Qwen Code stays Apache 2.0 (Gemini CLI heritage): keep LICENSE, NOTICE and file headers. A TypeScript fork is therefore mixed MIT + Apache 2.0, not pure MIT. A Rust port of designs (no copied code) can be pure MIT.
-- To verify first: dsh license (reported MIT), repo URL and stability.
+- dsh verified (section 16): MIT, `deepseek-ai/deepseek-harness`, developer preview 0.2.0-rc.2 with announced compatibility-breaking changes. Its vendored Cordis packages are MIT too.
+- Qwen Code verified (section 16): Apache 2.0 `LICENSE`, files carry `SPDX-License-Identifier: Apache-2.0` headers, no separate NOTICE file at the repo root.
 - Skill packs built from official docs: check content licenses (many are CC-BY-4.0, which requires attribution).
 - Apple HIG: check terms of use; summarize principles, do not copy text.
 
@@ -23,7 +24,7 @@ A harness combining DeepSeek Harness (dsh: TypeScript, Cordis plugins, dev previ
 
 Verified (Qwen Code GitHub README): Plan Mode; Skills (built-in /review, /batch, /loop, /bugfix; `.qwen/skills/<name>/SKILL.md`); Subagents; Agent Teams; Dynamic Workflows; Hooks; MCP; LSP; Auto-Memory; Auto-Skills; Auto Mode; Sandbox; Git Worktrees; providers including vLLM (auth via /auth).
 
-Not confirmed: approval-mode names; detailed behavior of skills, subagents, hooks and auto-skills. Action: read the repo's `docs/` after cloning (docs site is blocked in this environment).
+Previously unconfirmed items (approval-mode names, skills, subagents, hooks, auto-skills) were read from the cloned repos and are recorded in section 16. Sources read: Qwen Code 0.24.7 and dsh 0.2.0-rc.2, shallow clones as of 2026-09-29.
 
 ## 4. Core behaviors
 
@@ -172,4 +173,68 @@ Decide by measurement: Phase 0 builds the eval harness and baselines plain qwen-
 
 ## 15. Open questions
 
-- None blocking. Confirm dsh license/repo and the vLLM auth scheme with the service owner.
+- Confirm the vLLM auth scheme with the service owner.
+- Decide the base (section 16.4): extension on Qwen Code, Qwen Code fork, dsh fork, or Rust. Recommendation there.
+
+## 16. Discovery findings (read from source, 2026-09-29)
+
+### 16.1 Qwen Code 0.24.7 (Apache 2.0, pnpm monorepo, ~10k files, very active)
+
+- Packages: `core`, `cli`, `web-shell` (React browser terminal UI over a daemon, `qwen serve`), `sdk-typescript/python/java`, `acp-bridge`, `channels`, `vscode-ide-companion`, `desktop`, and more.
+- Approval modes (five): Plan (read-only), Ask Permissions (config value `default`), Auto-Edit, Auto (default out of the box; two-stage LLM classifier: fast `shouldBlock`, then a thinking stage only on block; uses the configured fast model), YOLO. Shift+Tab cycles plan, default, auto-edit, auto, yolo. Hard `permissions.deny/ask` rules win over the classifier; writes to its own config/skills/hooks paths and `.git/` always go through the classifier.
+- Hooks: 22 events, including `PreToolUse`, `PostToolUse`, `PostToolBatch`, `UserPromptSubmit`, `Stop`, `StopFailure`, `SubagentStart/Stop`, `PreCompact/PostCompact`, `PermissionRequest/Denied`. Types: command, HTTP, function, prompt. A `Stop` hook is a natural place for a verify-before-output gate.
+- Skills: `SKILL.md` folders, model-invoked or `/name`; `/learn` creates `.qwen/skills/learned-skill-<name>/`. Auto-skills carry `source: auto-skill` frontmatter and live in the project's `.qwen/skills/`. A deterministic Auto-Skill Curator (design doc 2026-07-27) marks skills stale at 30 days and archives at 90 days, without an LLM. This differs from our design: their skills are visible and in-repo, ours are hidden and outside the repo, and their lifecycle uses age, not verification outcomes.
+- Subagents, Agent Teams, Dynamic Workflows, background agents, worktrees, `/batch`, `/loop`, goals, scheduled tasks, LSP, MCP, memory with recall and microcompaction, tool-output offload, file-history snapshots (undo).
+- External subagent executors `claude-code` and `codex`; native Windows launches of these are rejected (macOS/Linux/WSL only).
+- Sandbox: Linux bwrap (or Landlock fallback with open network only), macOS Seatbelt, Docker/Podman. No native Windows process sandbox is documented, and ACP, `qwen serve` and web terminals reject the execution sandbox. This is a gap against our all-three-platforms goal.
+- Model layer: OpenAI-compatible provider is used for vLLM (`baseUrl`, `envKey`, `samplingParams`, `extra_body`, `streamIdleTimeoutMs`). `streamingToolCallParser.ts` repairs malformed streamed tool-call JSON. Also present: `prefix-caching.ts`, `taggedThinkingParser.ts`, per-provider quirks, loop detection (`StopFailure` type `loop_detected`), adaptive tool-call cap, reasoning-effort overrides. Whether these give Qwen3 `qwen3_coder` output good results under MTP is a P0 measurement.
+
+### 16.2 dsh 0.2.0-rc.2 (MIT, developer preview)
+
+- Everything is a Cordis plugin: model adapter, tool registry, session log and agent loop are replaceable from configuration. Profiles (`web`, `headless`, `sdk`, `sdk-minimal`, `acp`) are composed from bundles plus YAML patches (`--dump-config` prints the tree).
+- Packages include `core` (session, agent-loop, tools, system-prompt), `llm` (`llm-pi-ai` routes OpenAI-compatible or self-hosted endpoints with `compat` switches; `llm-retry`), `compaction`, `guard` (repeat-tool-reminder), `sandbox` (local, policy, **windows-acl** restricted-token backend), `skill`, `subagent` (acp, claude-code, codex, sdk), `workflow`, `goal`, `lsp`, `mcp`, `hooks`, `web`, `apps/{cli,web,desktop}`, Python and TS SDKs.
+- Web UI starts on `127.0.0.1:3080` via `npx @deepseek-ai/dsh web`. `SAFETY.md` states it is unaudited and must not be the only security control.
+- Vendors Cordis source under MIT; runtime is Node/pnpm like Qwen Code. Compatibility-breaking changes are expected during preview.
+
+### 16.3 Implications for the plan
+
+1. Both bases are TypeScript monorepos with a browser UI already. The larger cost is not features but tracking two fast-moving upstreams. A fork of Qwen Code inherits roughly 10k files of surface we do not need (channels, mobile, desktop, omni/media, IM integrations).
+2. Several planned features already exist upstream and should be reused, not rebuilt: Plan Mode, five approval modes with a classifier, hooks, subagents/workflows, worktrees, undo snapshots, MCP/LSP, tool-call repair, prefix-caching helper, web-shell.
+3. Genuinely new work is smaller than the plan implied: verification gate with deterministic arbiters and rounds, intake funnel, the hidden outcome-scored skill store with scope classification and cross-project reuse, master/worker governor tied to vLLM `/metrics`, HIG UI baseline, version packs, and the eval harness.
+4. Windows: dsh's `sandbox-windows-acl` is the only Windows confinement found; it is a candidate to port or reference.
+5. Auto Mode exists in Qwen Code as a permission classifier. Our "auto mode" is a different thing (autonomous run plus up to 5 verification rounds). Name ours differently in UI (for example "Autonomous") to avoid confusing users of both.
+
+### 16.4 Base options and recommendation
+
+| Option | What | For | Against |
+|---|---|---|---|
+| A | Extension layer on Qwen Code: hooks (`Stop`, `PostToolBatch`), skills, SDK, MCP server, no fork | Cheapest; tracks upstream; ships in days; tests the verification gate on real tasks | Hidden store and funnel may not fit hook surface; upstream owns UI |
+| B | Fork Qwen Code | Full control of loop, UI, skill store | Merge burden on a daily-moving codebase; large surface |
+| C | Fork dsh | Plugin architecture makes swapping loop/skills/tools clean; MIT only | Preview, breaking changes, no Qwen-specific tool-call handling, DeepSeek-oriented |
+| D | Rust rewrite | Startup, memory, single binary | Model time dominates; highest effort |
+
+Recommendation: run P0 with A as the first prototype (verification gate as a `Stop` hook plus a skill-gate MCP/hook), measure against plain Qwen Code, and only escalate to B or C for the pieces A cannot do. Keep the Rust spike, but time-boxed and after A's measurements show where harness overhead actually matters.
+
+### 16.5 Feature matrix (first pass)
+
+| Feature | Source | Decision |
+|---|---|---|
+| Streaming tool-call parser with repair | Qwen Code | keep, measure on Qwen3.8 |
+| Plan Mode, approval modes | Qwen Code | keep; add compact one-key plan for trivial tasks |
+| Auto Mode classifier | Qwen Code | keep as permission layer |
+| Hooks (22 events) | Qwen Code | keep; primary extension seam for option A |
+| Auto-skills + curator | Qwen Code | rewrite: hidden store, scope classification, outcome-scored quarantine |
+| SKILL.md / AGENTS.md user files | Qwen Code, dsh | keep, visible and editable |
+| Subagents, teams, workflows | Qwen Code | keep; add file-ownership scheduler and vLLM-aware governor |
+| Worktrees | Qwen Code | keep optional; default to file ownership in one tree |
+| Sandbox Linux/macOS | Qwen Code | keep |
+| Sandbox Windows | dsh `sandbox-windows-acl` | port or reference |
+| Web UI | Qwen Code `web-shell`, dsh `apps/web` | evaluate both in P0; restyle to HIG; apply section 10 checklist |
+| Plugin/profile composition (Cordis) | dsh | port idea only if option C is chosen |
+| Undo snapshots | Qwen Code file-history | keep; add per-turn git snapshot |
+| IM channels, mobile, desktop, omni media, browser/computer use | Qwen Code | drop |
+| Verification gate, intake funnel, HIG skill, version packs, eval harness | new | build |
+
+### 16.6 Still to read (next discovery pass)
+
+Qwen Code: `prompts.ts` and tool descriptions, compaction service, `permissions/`, `daemon`/web-shell auth model. dsh: `system-prompt`, `approval`, `skill` internals, web app security posture (Host/Origin checks). Codex CLI (Rust) sandbox and TUI; Hermes anti-patterns; version sources and licenses for .NET/React/Angular docs; measurements on the user's vLLM (need endpoint access, which this cloud session does not have).
