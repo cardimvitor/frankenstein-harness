@@ -174,7 +174,7 @@ Decide by measurement: Phase 0 builds the eval harness and baselines plain qwen-
 ## 15. Open questions
 
 - Confirm the vLLM auth scheme with the service owner.
-- Decide the base (section 16.4): extension on Qwen Code, Qwen Code fork, dsh fork, or Rust. Recommendation there.
+- Base decided: native hard fork of Qwen Code, Qwen-only (section 16.4). Confirm the fork name, license header policy and which Qwen Code packages to keep in the first pass.
 
 ## 16. Discovery findings (read from source, 2026-09-29)
 
@@ -213,7 +213,18 @@ Decide by measurement: Phase 0 builds the eval harness and baselines plain qwen-
 | C | Fork dsh | Plugin architecture makes swapping loop/skills/tools clean; MIT only | Preview, breaking changes, no Qwen-specific tool-call handling, DeepSeek-oriented |
 | D | Rust rewrite | Startup, memory, single binary | Model time dominates; highest effort |
 
-Recommendation: run P0 with A as the first prototype (verification gate as a `Stop` hook plus a skill-gate MCP/hook), measure against plain Qwen Code, and only escalate to B or C for the pieces A cannot do. Keep the Rust spike, but time-boxed and after A's measurements show where harness overhead actually matters.
+Decision (user, 2026-09-29): Frankenstein Harness ships as a native, Qwen-only product, not as an extension. Option A is therefore not a delivery form. It survives only as a throwaway P0 measurement rig if it saves time, and nothing from it is a product dependency.
+
+Recommended base: option B, a hard fork of Qwen Code (Apache 2.0 headers and NOTICE kept, our own name and MIT for new code), with dsh contributing ideas only (Windows ACL sandbox, profile composition, web app patterns), not code, unless a specific piece is worth vendoring under its MIT license.
+
+Fork rules that keep the "best of both worlds" real and measurable:
+
+- Remove what a Qwen-only coding harness does not need: other-provider content generators (Anthropic, Gemini, per-vendor quirks other than Qwen/vLLM), IM channels, mobile, desktop, omni/media, browser/computer use, external Claude Code/Codex executors.
+- Specialize the model layer for Qwen3.8 on vLLM: one provider path, one tool-call dialect (`qwen3_coder`), tuned prompts and sampling, MTP-aware output shaping (section 7).
+- Treat upstream as a source of ideas, not a merge target: record the fork commit, review upstream releases periodically, and cherry-pick fixes by hand. Do not promise to track upstream.
+- Skills, verification and orchestration are first-class core code, not hooks. The hidden skill store and gate run inside the loop, so the gate adds no extra turn and no user-visible surface.
+- Acceptance is the P0 eval harness: each core change must beat or match plain Qwen Code on pass rate, median task time, malformed-call rate and false positives (section 14). A change that does not is reverted.
+- Rust stays a time-boxed spike after the fork baseline exists; it wins only if measured harness overhead or Windows/sandbox needs justify it.
 
 ### 16.5 Feature matrix (first pass)
 
