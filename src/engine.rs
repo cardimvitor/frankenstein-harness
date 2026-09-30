@@ -721,6 +721,7 @@ impl Engine {
             let diff2 = if report.verdict == Verdict::Pass { task_diff.chars().take(6000).collect::<String>() } else { String::new() };
             let rounds_used = report.rounds.len();
             let used2 = used.clone();
+            let cwd2 = self.cwd.clone();
             let h = tokio::spawn(async move {
                 evaluate(&store, POLICE_DEFAULTS);
                 promote_eligible(&store, POLICE_DEFAULTS.promote_n);
@@ -734,6 +735,12 @@ impl Engine {
                     }
                 }
                 if verdict == "pass" {
+                    // thin, frequently used project skills are enriched from the repository (read-only, evidence required)
+                    if let Some(sk) = crate::skills::research::find_thin(&store, &fp2.project_id).into_iter().next() {
+                        if let crate::skills::research::Outcome::Enriched(n) = crate::skills::research::research_skill(&store, &llm, &cwd2, &sk, None).await {
+                            io2.notice(NoticeKind::Skill, &format!("enriched project skill from repository docs: {n}"));
+                        }
+                    }
                     if let MineOutcome::Created(n) = mine(&store, &llm, MineInput { task: &task_s, diff: &diff2, changed: &changed2, fp: &fp2, verdict: &verdict }, None).await {
                         io2.notice(NoticeKind::Skill, &format!("learned a new project skill: {n}"));
                     }
