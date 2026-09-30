@@ -236,13 +236,17 @@ pub struct Engine {
     pub cwd: PathBuf,
     pub llm: LlmClient,
     pub store: SkillStore,
+    pub hooks: Arc<crate::hooks::Hooks>,
+    started: std::sync::atomic::AtomicBool,
     pending: Mutex<Vec<tokio::task::JoinHandle<()>>>,
 }
 
 impl Engine {
     pub fn new(cfg: Config, env: Env, io: Arc<dyn Io>, cwd: impl Into<PathBuf>, store: SkillStore) -> Self {
         let llm = LlmClient::new(cfg.clone(), env.clone());
-        Engine { cfg, env, io, cwd: cwd.into(), llm, store, pending: Mutex::new(vec![]) }
+        let cwd: PathBuf = cwd.into();
+        let hooks = Arc::new(crate::hooks::Hooks::load(&cwd, &env));
+        Engine { cfg, env, io, cwd, llm, store, hooks, started: std::sync::atomic::AtomicBool::new(false), pending: Mutex::new(vec![]) }
     }
 
     /// Wait for post-delivery background work (skill learning) so short-lived CLI runs do not drop it.
@@ -258,6 +262,7 @@ impl Engine {
         ao.context = Some(context.to_string());
         ao.context_window = self.cfg.context_window;
         ao.wrap_shell = wrap.clone();
+        ao.hooks = if self.hooks.is_empty() { None } else { Some(self.hooks.clone()) };
         let io = self.io.clone();
         let (io1, io2, io3, io4, io5) = (io.clone(), io.clone(), io.clone(), io.clone(), io.clone());
         ao.events = Events {
@@ -290,10 +295,23 @@ impl Engine {
                 r.timings = timings.clone();
                 r.llm = self.llm.stats();
                 r.metrics = delta(&m0, &fetch_metrics(&self.cfg, &self.env).await);
+                self.hooks.fire(crate::hooks::HookEvent::Stop, json!({"verdict": r.verdict, "reason": r.reason, "changed": r.changed})).await;
                 return r;
             }};
         }
 
+        if self.hooks.skipped_untrusted && !self.started.load(std::sync::atomic::Ordering::Relaxed) {
+            io.notice(NoticeKind::Warn, "project hooks (.fh/hooks.json) were skipped: this workspace is not trusted (run `fh trust`)");
+        }
+        if !self.started.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            for n in self.hooks.fire(crate::hooks::HookEvent::SessionStart, json!({})).await.notes {
+                io.notice(NoticeKind::Info, &n);
+            }
+        }
+        let up = self.hooks.fire(crate::hooks::HookEvent::UserPromptSubmit, json!({"prompt": task})).await;
+        if let Some(why) = up.blocked {
+            finish!(TaskResult::new("aborted", &format!("blocked by hook: {why}")));
+        }
         let fp: Fingerprint = fingerprint(&self.cwd);
         let known = self.store.is_known_project(&fp.project_id);
         let label = self.cwd.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "project".into());

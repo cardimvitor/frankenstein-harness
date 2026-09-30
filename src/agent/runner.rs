@@ -44,11 +44,12 @@ pub struct AgentOptions {
     pub history: Option<Vec<Message>>,
     pub context_window: usize,
     pub wrap_shell: Option<ShellWrap>,
+    pub hooks: Option<Arc<crate::hooks::Hooks>>,
 }
 
 impl AgentOptions {
     pub fn new(llm: LlmClient, cwd: impl Into<PathBuf>, mode: Mode) -> Self {
-        AgentOptions { llm, cwd: cwd.into(), mode, thinking: None, max_steps: 40, cancel: None, tools: all_tools(), owned_globs: None, confirm: None, events: Events::default(), context: None, history: None, context_window: 131072, wrap_shell: None }
+        AgentOptions { llm, cwd: cwd.into(), mode, thinking: None, max_steps: 40, cancel: None, tools: all_tools(), owned_globs: None, confirm: None, events: Events::default(), context: None, history: None, context_window: 131072, wrap_shell: None, hooks: None }
     }
 }
 
@@ -205,11 +206,23 @@ pub async fn run_agent(task: &str, o: AgentOptions) -> AgentResult {
                         }
                     }
                 }
+                if let Some(h) = &o.hooks {
+                    let out = h.fire(crate::hooks::HookEvent::PreToolUse, serde_json::json!({"tool_name": call.name, "tool_input": call.args})).await;
+                    if let Some(why) = out.blocked {
+                        return ToolResult::err(format!("blocked by hook: {why}"));
+                    }
+                }
                 let t0 = Instant::now();
                 if let Some(f) = &o.events.tool_start {
                     f(&call);
                 }
                 let mut res = tool.execute(&call.args, &ctx).await;
+                if let Some(h) = &o.hooks {
+                    let out = h.fire(crate::hooks::HookEvent::PostToolUse, serde_json::json!({"tool_name": call.name, "tool_input": call.args, "tool_response": {"ok": res.ok, "output": res.output.chars().take(4000).collect::<String>()}})).await;
+                    if let Some(why) = out.blocked {
+                        res.output.push_str(&format!("\n[hook feedback: {why}]"));
+                    }
+                }
                 if rep >= 3 {
                     res.output.push_str("\n[You have repeated this exact call several times. Try a different approach.]");
                 }

@@ -341,7 +341,7 @@ impl Tool for Bash {
             Err(e) => return ToolResult::err(e),
         };
         let t_ms = (num_arg(a, "timeout_s").unwrap_or(120).max(1) as u64 * 1000).min(ctx.bash_timeout_ms);
-        let r = run(cmd, &ctx.cwd, RunOpts { timeout: Some(Duration::from_millis(t_ms)), cancel: ctx.cancel.clone(), env: None, wrap: ctx.wrap_shell.clone() }).await;
+        let r = run(cmd, &ctx.cwd, RunOpts { timeout: Some(Duration::from_millis(t_ms)), cancel: ctx.cancel.clone(), env: None, wrap: ctx.wrap_shell.clone(), stdin: None }).await;
         let mut body = r.stdout.clone();
         if !r.stderr.is_empty() {
             if !body.is_empty() {

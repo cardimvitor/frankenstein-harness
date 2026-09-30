@@ -2,7 +2,7 @@ use std::path::Path;
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
 
@@ -80,6 +80,8 @@ pub struct RunOpts {
     /// full environment for the child; None = scrubbed process environment
     pub env: Option<Vec<(String, String)>>,
     pub wrap: Option<ShellWrap>,
+    /// written to the child's stdin, then closed
+    pub stdin: Option<String>,
 }
 
 async fn read_capped<R: tokio::io::AsyncRead + Unpin>(mut r: R) -> String {
@@ -105,7 +107,7 @@ pub async fn run(cmd: &str, cwd: &Path, o: RunOpts) -> RunResult {
         sh = w(sh);
     }
     let mut c = Command::new(&sh.file);
-    c.args(&sh.args).current_dir(cwd).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
+    c.args(&sh.args).current_dir(cwd).stdin(if o.stdin.is_some() { Stdio::piped() } else { Stdio::null() }).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
     c.env_clear();
     for (k, v) in o.env.unwrap_or_else(scrubbed_env) {
         c.env(k, v);
@@ -116,6 +118,12 @@ pub async fn run(cmd: &str, cwd: &Path, o: RunOpts) -> RunResult {
         Ok(ch) => ch,
         Err(e) => return RunResult { code: Some(-1), stderr: e.to_string(), ms: t0.elapsed().as_millis() as u64, ..Default::default() },
     };
+    if let (Some(input), Some(mut si)) = (o.stdin.clone(), child.stdin.take()) {
+        tokio::spawn(async move {
+            let _ = si.write_all(input.as_bytes()).await;
+            let _ = si.shutdown().await;
+        });
+    }
     let pid = child.id();
     let out = tokio::spawn(read_capped(child.stdout.take().unwrap()));
     let err = tokio::spawn(read_capped(child.stderr.take().unwrap()));

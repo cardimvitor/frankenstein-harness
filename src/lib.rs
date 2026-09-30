@@ -18,3 +18,5 @@ pub mod validate;
 pub mod ui;
 pub mod secrets;
 pub mod tui;
+pub mod trust;
+pub mod hooks;
