@@ -6,3 +6,7 @@ pub mod util;
 pub mod llm;
 pub mod testkit;
 pub mod types;
+pub mod fingerprint;
+pub mod session;
+pub mod verify;
+pub mod skills;
