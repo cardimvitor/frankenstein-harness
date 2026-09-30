@@ -101,6 +101,7 @@ PLAYWRIGHT_MODULE=$(npm root -g)/playwright node scripts/ui-smoke.mjs /tmp/fh-ui
 - [docs/VPS_VALIDATION_PROMPT.md](docs/VPS_VALIDATION_PROMPT.md): the one prompt to validate everything on the VPS
 - [docs/ROADMAP.md](docs/ROADMAP.md): what is left (VPS-blocked tuning, platform gaps, questions for you)
 - [docs/STUDY.md](docs/STUDY.md): the Codex/Hermes study (not done, and why)
+- [docs/LITELLM.md](docs/LITELLM.md): LiteLLM in front of vLLM (verified request shapes, what changes)
 - [docs/BLACKWELL.md](docs/BLACKWELL.md), [docs/VERSIONS.md](docs/VERSIONS.md), [docs/EVAL.md](docs/EVAL.md), [docs/SECURITY.md](docs/SECURITY.md)
 
 ## License
