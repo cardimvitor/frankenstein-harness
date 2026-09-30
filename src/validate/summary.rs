@@ -56,9 +56,16 @@ pub fn summarize_run(dir: &Path, failed_steps: &str) -> String {
     }
     let single = of("fh-single");
     if !fh.is_empty() && !single.is_empty() {
-        let multi_fh: Vec<&&Value> = fh.iter().filter(|r| r["id"].as_str().map(|i| i.contains("two-modules")).unwrap_or(false)).collect();
-        let _ = multi_fh;
-        grade("Orchestration adds value (fh vs fh-single)", if rate(&fh) >= rate(&single) && secs(&fh) <= secs(&single) * 1.25 { "PASS" } else { "FAIL" }, format!("fan-out {:.0}% in {:.1}s vs single agent {:.0}% in {:.1}s; if FAIL, set maxConcurrency to 1 (docs/ROADMAP.md, gate decision 1)", rate(&fh) * 100.0, secs(&fh), rate(&single) * 100.0, secs(&single)));
+        // the same rule as `fh eval` prints (docs/ROADMAP.md section 5): pass rate, wall time and uncached tokens per solved task
+        let stats = |rs: &[&Value]| crate::eval::runner::RunnerStats {
+            n: rs.len(),
+            solved: rs.iter().filter(|r| r["solved"] == true).count(),
+            median_s: secs(rs),
+            cost_per_solved: { let c: f64 = rs.iter().filter_map(|r| r["costTokens"].as_f64()).sum(); let solved = rs.iter().filter(|r| r["solved"] == true).count(); if solved > 0 && rs.iter().any(|r| r["costTokens"].is_number()) { Some(c / solved as f64) } else { None } },
+        };
+        let rule = crate::eval::runner::fanout_rule(&stats(&fh), &stats(&single));
+        let detail = rule.iter().map(|(n, ok, d)| format!("{} {n}: {d}", if *ok { "ok" } else { "FAILED" })).collect::<Vec<_>>().join("; ");
+        grade("Orchestration adds value (fh vs fh-single)", if rule.iter().all(|r| r.1) { "PASS" } else { "FAIL" }, format!("{detail}. If FAIL, set maxConcurrency to 1 (docs/ROADMAP.md, gate decision 1)"));
     }
     let gate_ok = unit.contains("test gate_is_deterministic_fast_and_makes_no_llm_call ... ok");
     if !fh.is_empty() {

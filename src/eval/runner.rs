@@ -25,6 +25,7 @@ pub struct EvalRow {
     pub think_leaks: Option<u64>,
     pub tokens_out: Option<u64>,
     pub tokens_in: Option<u64>,
+    pub cached_tokens: Option<u64>,
     pub requests: Option<u64>,
     pub acceptance: Option<f64>,
     pub prefix_hit: Option<f64>,
@@ -35,11 +36,25 @@ pub struct EvalRow {
     pub error: Option<String>,
 }
 
+/// What a run cost in GPU work: prompt tokens the server had to compute (prompt minus cached) plus completion tokens.
+/// vLLM reports cached tokens per request only when prompt-token details are enabled; otherwise the prefix-cache hit
+/// rate measured from /metrics is used to estimate them.
+impl EvalRow {
+    pub fn cost_tokens(&self) -> Option<u64> {
+        let (p, o) = (self.tokens_in?, self.tokens_out.unwrap_or(0));
+        let cached = match self.cached_tokens {
+            Some(c) if c > 0 => c,
+            _ => (p as f64 * self.prefix_hit.unwrap_or(0.0).clamp(0.0, 1.0)) as u64,
+        };
+        Some(p.saturating_sub(cached) + o)
+    }
+}
+
 impl EvalRow {
     pub fn to_json(&self) -> Value {
         json!({"id": self.id, "runner": self.runner, "rep": self.rep, "solved": self.solved, "seconds": self.seconds, "verdict": self.verdict, "rounds": self.rounds,
                "toolCalls": self.tool_calls, "failedTools": self.failed_tools, "repaired": self.repaired, "malformed": self.malformed, "thinkLeaks": self.think_leaks,
-               "tokensOut": self.tokens_out, "tokensIn": self.tokens_in, "requests": self.requests, "acceptance": self.acceptance, "prefixHit": self.prefix_hit,
+               "tokensOut": self.tokens_out, "tokensIn": self.tokens_in, "cachedTokens": self.cached_tokens, "costTokens": self.cost_tokens(), "requests": self.requests, "acceptance": self.acceptance, "prefixHit": self.prefix_hit,
                "verifierFalseNegative": self.verifier_false_negative, "gateMs": self.gate_ms,
                "reviewer": self.reviewer.map(|r| json!({"raised": r.0, "valid": r.1, "dropped": r.2, "blockers": r.3})), "error": self.error})
     }
@@ -137,6 +152,7 @@ pub async fn run_one(cfg: &Config, env: &Env, t: &EvalTask, runner: &str, rep: u
         row.think_leaks = Some(r.llm.think_leaks);
         row.tokens_out = Some(r.llm.completion_tokens);
         row.tokens_in = Some(r.llm.prompt_tokens);
+        row.cached_tokens = Some(r.llm.cached_tokens);
         row.requests = Some(r.llm.requests);
         row.acceptance = r.metrics.acceptance_rate;
         row.prefix_hit = r.metrics.prefix_hit_rate;
@@ -179,6 +195,46 @@ fn sum_u(a: impl Iterator<Item = Option<u64>>) -> u64 {
     a.map(|x| x.unwrap_or(0)).sum()
 }
 
+/// Numbers the fan-out rule compares (one runner over the whole corpus).
+#[derive(Clone, Debug, PartialEq)]
+pub struct RunnerStats {
+    pub n: usize,
+    pub solved: usize,
+    pub median_s: f64,
+    /// (uncached prompt + completion) tokens divided by solved tasks; None when nothing was solved or no token data
+    pub cost_per_solved: Option<f64>,
+}
+
+impl RunnerStats {
+    pub fn from_rows(rows: &[&EvalRow]) -> Self {
+        let solved = rows.iter().filter(|r| r.solved).count();
+        let cost: u64 = rows.iter().filter_map(|r| r.cost_tokens()).sum();
+        let has = rows.iter().any(|r| r.cost_tokens().is_some());
+        RunnerStats { n: rows.len(), solved, median_s: median(&rows.iter().map(|r| r.seconds).collect::<Vec<_>>()), cost_per_solved: if solved > 0 && has { Some(cost as f64 / solved as f64) } else { None } }
+    }
+    pub fn rate(&self) -> f64 {
+        if self.n == 0 { 0.0 } else { self.solved as f64 / self.n as f64 }
+    }
+}
+
+pub const FANOUT_TIME_FACTOR: f64 = 0.8;
+pub const FANOUT_RATE_MARGIN: f64 = 0.05;
+pub const FANOUT_COST_FACTOR: f64 = 2.0;
+
+/// The fan-out rule from docs/ROADMAP.md, as data: (rule, passed, detail). Fan-out stays on only if every line passes.
+pub fn fanout_rule(fh: &RunnerStats, single: &RunnerStats) -> Vec<(String, bool, String)> {
+    let mut v = Vec::new();
+    v.push(("pass rate not lower than a single agent".to_string(), fh.rate() + 1e-9 >= single.rate(), format!("fan-out {:.0}% vs single {:.0}%", fh.rate() * 100.0, single.rate() * 100.0)));
+    let faster = fh.median_s <= single.median_s * FANOUT_TIME_FACTOR;
+    let better = fh.rate() >= single.rate() + FANOUT_RATE_MARGIN - 1e-9;
+    v.push((format!("pays for itself: wall time <= {:.0}% of single, or pass rate +{:.0} points", FANOUT_TIME_FACTOR * 100.0, FANOUT_RATE_MARGIN * 100.0), faster || better, format!("median {:.1}s vs {:.1}s", fh.median_s, single.median_s)));
+    match (fh.cost_per_solved, single.cost_per_solved) {
+        (Some(a), Some(b)) if b > 0.0 => v.push((format!("uncached tokens per solved task <= {FANOUT_COST_FACTOR}x single"), a <= b * FANOUT_COST_FACTOR, format!("{:.0} vs {:.0} ({:.2}x)", a, b, a / b))),
+        _ => v.push((format!("uncached tokens per solved task <= {FANOUT_COST_FACTOR}x single"), true, "no token data (nothing solved or usage not reported); not enforced".into())),
+    }
+    v
+}
+
 pub fn summarize(rows: &[EvalRow]) -> String {
     let mut runners: Vec<String> = Vec::new();
     for r in rows {
@@ -209,6 +265,28 @@ pub fn summarize(rows: &[EvalRow]) -> String {
             if is_fh { format!("{:.2}", rs.iter().map(|r| r.rounds.unwrap_or(0)).sum::<usize>() as f64 / rs.len().max(1) as f64) } else { na() },
             if is_fh { sum_u(rs.iter().map(|r| r.tokens_out)).to_string() } else { na() },
         ));
+    }
+    lines.push(String::new());
+    lines.push("| runner | solved | uncached+completion tokens per solved task | wall s per solved task |".to_string());
+    lines.push("|---|---|---|---|".to_string());
+    for rn in &runners {
+        let rs: Vec<&EvalRow> = rows.iter().filter(|r| &r.runner == rn).collect();
+        let st = RunnerStats::from_rows(&rs);
+        let secs: f64 = rs.iter().map(|r| r.seconds).sum();
+        lines.push(format!("| {rn} | {}/{} | {} | {} |", st.solved, st.n, st.cost_per_solved.map(|c| format!("{c:.0}")).unwrap_or_else(|| "n/a".into()), if st.solved > 0 { format!("{:.1}", secs / st.solved as f64) } else { "n/a".into() }));
+    }
+    {
+        let of = |n: &str| -> Vec<&EvalRow> { rows.iter().filter(|r| r.runner == n).collect() };
+        let (a, b) = (of("fh"), of("fh-single"));
+        if !a.is_empty() && !b.is_empty() {
+            lines.push(String::new());
+            lines.push("Fan-out rule (keep worker fan-out only if every line passes):".to_string());
+            let rule = fanout_rule(&RunnerStats::from_rows(&a), &RunnerStats::from_rows(&b));
+            for (name, ok, detail) in &rule {
+                lines.push(format!("- {} {name}: {detail}", if *ok { "PASS" } else { "FAIL" }));
+            }
+            lines.push(format!("=> {}", if rule.iter().all(|r| r.1) { "keep fan-out on" } else { "set maxConcurrency to 1 (fan-out off)" }));
+        }
     }
     let fh: Vec<&EvalRow> = rows.iter().filter(|r| r.runner == "fh").collect();
     if !fh.is_empty() {

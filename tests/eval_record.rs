@@ -152,3 +152,34 @@ fn polyglot_adapter_builds_verified_tasks_and_hides_the_reference_solution() {
     assert!(!r.status.success());
     assert!(String::from_utf8_lossy(&r.stderr).contains("passes on the stub"));
 }
+
+#[test]
+fn fanout_rule_and_cost_per_solved_task() {
+    use fh::eval::runner::{fanout_rule, summarize, EvalRow, RunnerStats};
+    let row = |runner: &str, solved: bool, secs: f64, tin: u64, cached: u64, tout: u64| EvalRow { id: "t".into(), runner: runner.into(), solved, seconds: secs, tokens_in: Some(tin), cached_tokens: Some(cached), tokens_out: Some(tout), ..Default::default() };
+    // cached tokens are subtracted; when the server reports none, the measured prefix-cache hit rate is used
+    assert_eq!(row("fh", true, 1.0, 10_000, 8_000, 500).cost_tokens(), Some(2_500));
+    let mut est = row("fh", true, 1.0, 10_000, 0, 500);
+    est.prefix_hit = Some(0.5);
+    assert_eq!(est.cost_tokens(), Some(5_500));
+    // fan-out: same pass rate, 30% faster, 1.5x the cost -> keep
+    let fh: Vec<EvalRow> = (0..4).map(|_| row("fh", true, 7.0, 30_000, 24_000, 3_000)).collect();
+    let single: Vec<EvalRow> = (0..4).map(|_| row("fh-single", true, 10.0, 20_000, 16_000, 2_000)).collect();
+    let (a, b) = (RunnerStats::from_rows(&fh.iter().collect::<Vec<_>>()), RunnerStats::from_rows(&single.iter().collect::<Vec<_>>()));
+    assert_eq!(a.cost_per_solved, Some(9_000.0));
+    assert!(fanout_rule(&a, &b).iter().all(|r| r.1), "{:?}", fanout_rule(&a, &b));
+    // too expensive (3x) and not faster -> the cost and time rules fail
+    let fh2: Vec<EvalRow> = (0..4).map(|_| row("fh", true, 9.5, 60_000, 30_000, 6_000)).collect();
+    let a2 = RunnerStats::from_rows(&fh2.iter().collect::<Vec<_>>());
+    let r = fanout_rule(&a2, &b);
+    assert_eq!(r.iter().map(|x| x.1).collect::<Vec<_>>(), vec![true, false, false], "{r:?}");
+    // lower pass rate fails the first rule even when faster and cheaper
+    let mut fh3 = fh.clone();
+    fh3[0].solved = false;
+    assert!(!fanout_rule(&RunnerStats::from_rows(&fh3.iter().collect::<Vec<_>>()), &b)[0].1);
+    // the report prints the table and a verdict line
+    let mut all = fh;
+    all.extend(single);
+    let md = summarize(&all);
+    assert!(md.contains("uncached+completion tokens per solved task") && md.contains("Fan-out rule") && md.contains("=> keep fan-out on"), "{md}");
+}
