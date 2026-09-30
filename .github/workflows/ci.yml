@@ -10,14 +10,20 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
-    # Windows is a target platform but the suite still shells out to POSIX `sh`, `git` and `python3`: report, do not block.
+    # Windows is a target platform but the integration suites still shell out to POSIX `sh` and `python3`: report, do not block.
     continue-on-error: ${{ matrix.os == 'windows-latest' }}
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --release
-      - run: cargo test --release
+      - if: matrix.os != 'windows-latest'
+        run: cargo test --release
+      # the integration suites still assume POSIX sh/python3 and hang on Windows: run the unit tests there until they are ported
+      - if: matrix.os == 'windows-latest'
+        run: cargo test --release --lib
+        timeout-minutes: 15
       - uses: actions/upload-artifact@v4
         with:
           name: fh-${{ matrix.os }}
