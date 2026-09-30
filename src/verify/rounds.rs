@@ -97,6 +97,12 @@ pub async fn run_round(ctx: &VerifyCtx<'_>, st: &mut VerifyState, round: usize) 
     );
     let mut checks: Vec<CheckResult> = cmd_res.into_iter().chain(dc.results).collect();
     let touched: Vec<String> = dc.changed.iter().filter(|f| !dc.deleted.contains(f)).cloned().collect();
+    let lsp_specs = super::lsp::load_specs(ctx.cwd, &crate::config::process_env());
+    if !lsp_specs.is_empty() {
+        if let Some(d) = super::lsp::diagnostics_check(ctx.cwd, ctx.cp, ctx.base, &touched, &lsp_specs).await {
+            checks.push(d);
+        }
+    }
     if let Some(f) = super::format::format_check(ctx.cwd, ctx.cp, ctx.base, &touched).await {
         checks.push(f);
     }

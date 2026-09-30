@@ -63,3 +63,116 @@ async fn format_check_needs_config_for_ruff() {
     let r = format_check(d.path(), &cp, &base, &["a.py".to_string()]).await.unwrap();
     assert_eq!(r.status, Status::Fail);
 }
+
+mod lsp {
+    use super::*;
+    use fh::verify::lsp::{diagnostics_check, LspSpec};
+
+    fn spec(pull: bool) -> LspSpec {
+        let mut args = vec![format!("{}/tests/fixtures/mock_lsp.py", env!("CARGO_MANIFEST_DIR"))];
+        if pull {
+            args.push("--pull".into());
+        }
+        LspSpec { name: "mock".into(), cmd: "python3".into(), args, exts: vec!["mock".into()], language_ids: Default::default(), timeout_ms: 5000 }
+    }
+
+    async fn scenario(pull: bool) {
+        let d = repo(&[("a.mock", "ok\nERROR old problem\nok\n"), ("b.mock", "fine\n")]);
+        let cp = Checkpoints::new(d.path());
+        let base = cp.create("base").await.unwrap();
+        let specs = [spec(pull)];
+        // pre-existing error shifts down two lines: not new. A warning is ignored.
+        std::fs::write(d.path().join("a.mock"), "new line\nnew line 2\nok\nERROR old problem\nWARN just a warning\n").unwrap();
+        let r = diagnostics_check(d.path(), &cp, &base, &["a.mock".into()], &specs).await.expect("server applies");
+        assert_eq!(r.status, Status::Pass, "{}", r.detail);
+        // a new error in an existing file and a brand-new file with an error are both reported
+        std::fs::write(d.path().join("a.mock"), "ok\nERROR old problem\nERROR brand new\n").unwrap();
+        std::fs::write(d.path().join("c.mock"), "ERROR in new file\n").unwrap();
+        let r = diagnostics_check(d.path(), &cp, &base, &["a.mock".into(), "c.mock".into()], &specs).await.unwrap();
+        assert_eq!(r.status, Status::Fail);
+        assert!(r.detail.contains("a.mock:3") && r.detail.contains("brand new") && r.detail.contains("c.mock:1"), "{}", r.detail);
+        assert!(!r.detail.contains("old problem"), "{}", r.detail);
+        // no file with a matching extension: no check
+        assert!(diagnostics_check(d.path(), &cp, &base, &["x.txt".into()], &specs).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn only_new_errors_count_push_diagnostics() {
+        scenario(false).await;
+    }
+
+    #[tokio::test]
+    async fn only_new_errors_count_pull_diagnostics() {
+        scenario(true).await;
+    }
+
+    #[tokio::test]
+    async fn missing_server_is_skipped_not_failed() {
+        let d = repo(&[("a.mock", "ok\n")]);
+        let cp = Checkpoints::new(d.path());
+        let base = cp.create("base").await.unwrap();
+        let mut s = spec(false);
+        s.cmd = "definitely-not-installed-lsp".into();
+        std::fs::write(d.path().join("a.mock"), "ok2\n").unwrap();
+        let r = diagnostics_check(d.path(), &cp, &base, &["a.mock".into()], &[s]).await.unwrap();
+        assert_eq!(r.status, Status::Skipped);
+    }
+}
+
+mod real_pyright {
+    use super::*;
+    use fh::verify::lsp::load_specs;
+    use fh::verify::lsp::diagnostics_check;
+
+    #[tokio::test]
+    async fn pyright_catches_a_new_type_error_and_ignores_the_old_one() {
+        if Command::new("which").arg("pyright-langserver").output().map(|o| !o.status.success()).unwrap_or(true) {
+            eprintln!("skipped: pyright-langserver not installed");
+            return;
+        }
+        let d = repo(&[("m.py", "def old() -> int:\n    return \"pre-existing type error\"\n\n\ndef good(x: int) -> int:\n    return x\n")]);
+        let cp = Checkpoints::new(d.path());
+        let base = cp.create("base").await.unwrap();
+        let specs = load_specs(d.path(), &Default::default());
+        assert!(specs.iter().any(|s| s.name == "python"), "python server should be detected");
+        // unchanged old error only -> pass
+        std::fs::write(d.path().join("m.py"), "# comment\ndef old() -> int:\n    return \"pre-existing type error\"\n\n\ndef good(x: int) -> int:\n    return x\n").unwrap();
+        let r = diagnostics_check(d.path(), &cp, &base, &["m.py".into()], &specs).await.unwrap();
+        assert_eq!(r.status, Status::Pass, "{}", r.detail);
+        // introduce a new one
+        std::fs::write(d.path().join("m.py"), "def old() -> int:\n    return \"pre-existing type error\"\n\n\ndef good(x: int) -> int:\n    return x\n\n\ndef bad() -> str:\n    return good(\"not an int\")\n").unwrap();
+        let r = diagnostics_check(d.path(), &cp, &base, &["m.py".into()], &specs).await.unwrap();
+        assert_eq!(r.status, Status::Fail, "{}", r.detail);
+        assert!(r.detail.contains("m.py:10") || r.detail.contains("m.py:9"), "{}", r.detail);
+        assert!(!r.detail.contains("m.py:2:"), "{}", r.detail);
+    }
+}
+
+mod real_tsserver {
+    use super::*;
+    use fh::verify::lsp::{diagnostics_check, load_specs};
+
+    /// Set FH_TEST_TSLS to a directory whose node_modules has typescript and typescript-language-server.
+    #[tokio::test]
+    async fn typescript_language_server_flags_only_new_errors() {
+        let Some(nm) = std::env::var_os("FH_TEST_TSLS").map(|p| std::path::PathBuf::from(p).join("node_modules")).filter(|p| p.join(".bin/typescript-language-server").exists()) else {
+            eprintln!("skipped: set FH_TEST_TSLS to enable");
+            return;
+        };
+        let d = repo(&[("tsconfig.json", "{\"compilerOptions\":{\"strict\":true,\"target\":\"es2020\",\"module\":\"commonjs\"},\"include\":[\"*.ts\"]}"), ("a.ts", "export const old: number = \"pre-existing\";\nexport function ok(x: number): number { return x; }\n")]);
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&nm, d.path().join("node_modules")).unwrap();
+        let cp = Checkpoints::new(d.path());
+        let base = cp.create("base").await.unwrap();
+        let specs = load_specs(d.path(), &Default::default());
+        assert!(specs.iter().any(|s| s.name == "typescript"));
+        std::fs::write(d.path().join("a.ts"), "// note\nexport const old: number = \"pre-existing\";\nexport function ok(x: number): number { return x; }\n").unwrap();
+        let r = diagnostics_check(d.path(), &cp, &base, &["a.ts".into()], &specs).await.unwrap();
+        assert_eq!(r.status, Status::Pass, "{}", r.detail);
+        std::fs::write(d.path().join("a.ts"), "export const old: number = \"pre-existing\";\nexport function ok(x: number): number { return x; }\nexport const bad: string = ok(\"nope\");\n").unwrap();
+        let r = diagnostics_check(d.path(), &cp, &base, &["a.ts".into()], &specs).await.unwrap();
+        assert_eq!(r.status, Status::Fail, "{}", r.detail);
+        assert!(r.detail.contains("a.ts:3"), "{}", r.detail);
+        assert!(!r.detail.contains("a.ts:1:"), "{}", r.detail);
+    }
+}
