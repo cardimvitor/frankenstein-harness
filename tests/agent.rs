@@ -189,3 +189,40 @@ async fn llm_compaction_keeps_an_early_fact_that_pruning_would_lose() {
     assert_eq!(without, "code unknown", "deterministic pruning alone loses the early fact");
     assert_eq!(none, 0);
 }
+
+#[tokio::test]
+async fn multi_edit_is_atomic_and_syntax_errors_are_reported_in_the_same_turn() {
+    let d = tempfile::tempdir().unwrap();
+    std::fs::write(d.path().join("m.py"), "def a():\n    return 1\n\n\ndef b():\n    return 2\n").unwrap();
+    let ctx = ToolCtx::new(d.path());
+    let edit = Edit::new();
+    // two changes in one call
+    let r = edit.execute(&json!({"path": "m.py", "edits": [{"old_text": "return 1", "new_text": "return 10"}, {"old_text": "return 2", "new_text": "return 20"}]}), &ctx).await;
+    assert!(r.ok && r.output.contains("2 changes") && !r.output.contains("syntax"), "{}", r.output);
+    assert_eq!(std::fs::read_to_string(d.path().join("m.py")).unwrap(), "def a():\n    return 10\n\n\ndef b():\n    return 20\n");
+    // all or nothing: the second edit does not match, so the first is not applied either
+    let before = std::fs::read_to_string(d.path().join("m.py")).unwrap();
+    let r = edit.execute(&json!({"path": "m.py", "edits": [{"old_text": "return 10", "new_text": "return 11"}, {"old_text": "no such text", "new_text": "x"}]}), &ctx).await;
+    assert!(!r.ok && r.output.contains("edit 2 of 2") && r.output.contains("Nothing was changed"), "{}", r.output);
+    assert_eq!(std::fs::read_to_string(d.path().join("m.py")).unwrap(), before);
+    // edits later in the batch see the result of earlier ones
+    let r = edit.execute(&json!({"path": "m.py", "edits": [{"old_text": "return 10", "new_text": "return 11"}, {"old_text": "return 11", "new_text": "return 12"}]}), &ctx).await;
+    assert!(r.ok, "{}", r.output);
+    assert!(std::fs::read_to_string(d.path().join("m.py")).unwrap().contains("return 12"));
+    // a broken edit is flagged right away, but the edit is applied (the model fixes it next turn)
+    let r = edit.execute(&json!({"path": "m.py", "old_text": "def a():", "new_text": "def a(:"}), &ctx).await;
+    assert!(r.ok && r.output.contains("syntax check failed") && r.output.to_lowercase().contains("syntaxerror"), "{}", r.output);
+    // new files are checked too; JSON in-process
+    let w = WriteNew::new();
+    let r = w.execute(&json!({"path": "c.json", "content": "{\"a\": 1,}"}), &ctx).await;
+    assert!(r.ok && r.output.contains("invalid JSON"), "{}", r.output);
+    let r = w.execute(&json!({"path": "ok.json", "content": "{\"a\": 1}"}), &ctx).await;
+    assert!(r.ok && !r.output.contains("syntax"), "{}", r.output);
+    // file names with quotes and spaces do not break the checker
+    let r = w.execute(&json!({"path": "it's fine.py", "content": "x = 1\n"}), &ctx).await;
+    assert!(r.ok && !r.output.contains("syntax"), "{}", r.output);
+    // single-edit form still works and reports nothing extra for unknown file types
+    std::fs::write(d.path().join("n.txt"), "hello").unwrap();
+    let r = edit.execute(&json!({"path": "n.txt", "old_text": "hello", "new_text": "bye"}), &ctx).await;
+    assert_eq!(r.output, "edited n.txt");
+}

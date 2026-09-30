@@ -16,7 +16,7 @@ use crate::skills::miner::{improve_used, mine, promote_eligible, MineInput, Mine
 use crate::skills::police::{evaluate, POLICE_DEFAULTS};
 use crate::skills::reuse::{accept_reuse, find_reuse_offers, ReuseOffer};
 use crate::skills::store::{Skill, SkillStore};
-use crate::skills::usercfg::load_user_config;
+use crate::skills::usercfg::load_user_config_trusted;
 use crate::types::{Message, Mode};
 use crate::util::proc::{run_simple, ShellWrap};
 use crate::util::sandbox::sandbox_for;
@@ -409,7 +409,13 @@ impl Engine {
         }
 
         // skill gate: deterministic, no model call
-        let user = load_user_config(&self.cwd);
+        let user = load_user_config_trusted(&self.cwd, crate::trust::is_trusted(&self.env, &self.cwd));
+        for (f, hits) in &user.blocked {
+            io.notice(NoticeKind::Warn, &format!("{f} was NOT loaded: it matches prompt-injection patterns ({}). Review it, then run `fh trust` if it is yours.", hits.join(", ")));
+        }
+        for (f, hits) in &user.warned {
+            io.notice(NoticeKind::Warn, &format!("{f} matches prompt-injection patterns ({}); loaded because this workspace is trusted.", hits.join(", ")));
+        }
         let mut g = gate(&self.store, &fp, task, &user);
         timings.gate_ms = g.ms;
         if !self.cfg.embedding_model.is_empty() {

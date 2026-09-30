@@ -218,7 +218,7 @@ pub fn locate(text: &str, old: &str) -> Option<(usize, usize, usize, bool)> {
 pub struct Edit(ToolSpec);
 impl Edit {
     pub fn new() -> Self {
-        Edit(spec("edit", "Replace one exact snippet in an existing file (search/replace). old_text must match exactly once; include enough context. Prefer this over rewriting files.", json!({"type":"object","properties":{"path":{"type":"string"},"old_text":{"type":"string"},"new_text":{"type":"string"},"replace_all":{"type":"boolean"}},"required":["path","old_text","new_text"]})))
+        Edit(spec("edit", "Replace exact snippets in an existing file (search/replace). Each old_text must match exactly once; include enough context. For several changes in one file pass `edits` (a list of {old_text,new_text}): they are applied in order, all or nothing, in ONE call. Prefer this over rewriting files.", json!({"type":"object","properties":{"path":{"type":"string"},"old_text":{"type":"string"},"new_text":{"type":"string"},"replace_all":{"type":"boolean"},"edits":{"type":"array","items":{"type":"object","properties":{"old_text":{"type":"string"},"new_text":{"type":"string"},"replace_all":{"type":"boolean"}},"required":["old_text","new_text"]}}},"required":["path"]})))
     }
 }
 #[async_trait]
@@ -230,10 +230,26 @@ impl Tool for Edit {
         false
     }
     async fn execute(&self, a: &Value, ctx: &ToolCtx) -> ToolResult {
-        let (p, old_t, new_t) = match (str_arg(a, "path"), str_arg(a, "old_text"), str_arg(a, "new_text")) {
-            (Ok(p), Ok(o), Ok(n)) => (p, o, n),
-            (Err(e), _, _) | (_, Err(e), _) | (_, _, Err(e)) => return ToolResult::err(e),
+        let p = match str_arg(a, "path") {
+            Ok(p) => p,
+            Err(e) => return ToolResult::err(e),
         };
+        // one edit (old_text/new_text) or a batch (edits); a batch is applied in order, all or nothing
+        let mut batch: Vec<(String, String, bool)> = Vec::new();
+        if let Some(list) = a.get("edits").and_then(|e| e.as_array()) {
+            for (i, e) in list.iter().enumerate() {
+                match (e.get("old_text").and_then(|v| v.as_str()), e.get("new_text").and_then(|v| v.as_str())) {
+                    (Some(o), Some(n)) => batch.push((o.to_string(), n.to_string(), e.get("replace_all").and_then(|v| v.as_bool()) == Some(true))),
+                    _ => return ToolResult::err(format!("edits[{i}] needs old_text and new_text")),
+                }
+            }
+        }
+        if batch.is_empty() {
+            match (str_arg(a, "old_text"), str_arg(a, "new_text")) {
+                (Ok(o), Ok(n)) => batch.push((o.to_string(), n.to_string(), a.get("replace_all").and_then(|v| v.as_bool()) == Some(true))),
+                (Err(e), _) | (_, Err(e)) => return ToolResult::err(e),
+            }
+        }
         let abs = match in_workspace(&ctx.cwd, p) {
             Ok(x) => x,
             Err(e) => return ToolResult::err(e.to_string()),
@@ -253,31 +269,65 @@ impl Tool for Edit {
                 return ToolResult::err("file changed since you read it; read_file again");
             }
         }
-        if old_t == new_t {
-            return ToolResult::err("old_text and new_text are identical");
-        }
-        if old_t.is_empty() {
-            return ToolResult::err("old_text is empty");
-        }
-        let out = if a.get("replace_all").and_then(|v| v.as_bool()) == Some(true) && text.contains(old_t) {
-            text.replace(old_t, new_t)
-        } else {
-            let Some((s, e, count, _)) = locate(&text, old_t) else {
-                return ToolResult::err("old_text not found. Re-read the file and copy the snippet exactly.");
-            };
-            if count > 1 {
-                return ToolResult::err(format!("old_text matches {count} places; add surrounding lines to make it unique (or set replace_all)."));
+        let many = batch.len() > 1;
+        let mut out = text.clone();
+        for (i, (old_t, new_t, replace_all)) in batch.iter().enumerate() {
+            let at = if many { format!("edit {} of {}: ", i + 1, batch.len()) } else { String::new() };
+            if old_t == new_t {
+                return ToolResult::err(format!("{at}old_text and new_text are identical"));
             }
-            format!("{}{}{}", &text[..s], new_t, &text[e..])
-        };
+            if old_t.is_empty() {
+                return ToolResult::err(format!("{at}old_text is empty"));
+            }
+            out = if *replace_all && out.contains(old_t.as_str()) {
+                out.replace(old_t.as_str(), new_t)
+            } else {
+                let Some((s, e, count, _)) = locate(&out, old_t) else {
+                    return ToolResult::err(format!("{at}old_text not found. Re-read the file and copy the snippet exactly.{}", if many { " Nothing was changed." } else { "" }));
+                };
+                if count > 1 {
+                    return ToolResult::err(format!("{at}old_text matches {count} places; add surrounding lines to make it unique (or set replace_all).{}", if many { " Nothing was changed." } else { "" }));
+                }
+                format!("{}{}{}", &out[..s], new_t, &out[e..])
+            };
+        }
         if let Err(e) = std::fs::write(&abs, &out) {
             return ToolResult::err(format!("write failed: {e}"));
         }
         ctx.read_cache.lock().unwrap().insert(abs.clone(), hash(&out));
         let r = rel(&ctx.cwd, &abs);
         ctx.touched.lock().unwrap().insert(r.clone());
-        ToolResult::ok(format!("edited {r}"))
+        let mut msg = if many { format!("edited {r} ({} changes)", batch.len()) } else { format!("edited {r}") };
+        if let Some(w) = syntax_feedback(&abs, ctx).await {
+            msg.push_str(&format!("\n[syntax check failed after this edit: fix it now]\n{w}"));
+        }
+        ToolResult::ok(msg)
     }
+}
+
+/// Quick syntax check of a file the agent just wrote (in-process for JSON, the language's own parser otherwise).
+/// Catches a broken edit in the same turn instead of a whole verification round later. None = fine, unknown or unavailable.
+pub async fn syntax_feedback(abs: &Path, ctx: &ToolCtx) -> Option<String> {
+    let ext = abs.extension()?.to_str()?.to_lowercase();
+    let file = abs.to_string_lossy().to_string();
+    let q = |s: &str| format!("'{}'", s.replace('\'', "'\\''"));
+    let cmd = match ext.as_str() {
+        "json" => {
+            let text = std::fs::read_to_string(abs).ok()?;
+            return serde_json::from_str::<Value>(&text).err().map(|e| format!("invalid JSON: {e}"));
+        }
+        "py" => format!("python3 -c 'import ast,sys; ast.parse(open(sys.argv[1], encoding=\"utf-8\").read(), sys.argv[1])' {}", q(&file)),
+        "js" | "mjs" | "cjs" => format!("node --check {}", q(&file)),
+        "sh" => format!("bash -n {}", q(&file)),
+        _ => return None,
+    };
+    let r = run(&cmd, &ctx.cwd, RunOpts { timeout: Some(Duration::from_secs(5)), cancel: ctx.cancel.clone(), env: None, wrap: ctx.wrap_shell.clone(), stdin: None }).await;
+    // exit -1 = the interpreter is not installed: no opinion
+    if r.code == Some(0) || r.code == Some(-1) || r.code == Some(127) || r.timed_out {
+        return None;
+    }
+    let msg = if r.stderr.trim().is_empty() { r.stdout } else { r.stderr };
+    Some(clip(msg.trim(), 800))
 }
 
 pub struct WriteNew(ToolSpec);
@@ -317,7 +367,11 @@ impl Tool for WriteNew {
         }
         let r = rel(&ctx.cwd, &abs);
         ctx.touched.lock().unwrap().insert(r.clone());
-        ToolResult::ok(format!("created {r}"))
+        let mut msg = format!("created {r}");
+        if let Some(w) = syntax_feedback(&abs, ctx).await {
+            msg.push_str(&format!("\n[syntax check failed for this file: fix it now]\n{w}"));
+        }
+        ToolResult::ok(msg)
     }
 }
 

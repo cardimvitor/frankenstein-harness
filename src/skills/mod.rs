@@ -8,5 +8,6 @@ pub mod police;
 pub mod research;
 pub mod reuse;
 pub mod store;
+pub mod threat;
 pub mod usercfg;
 pub mod validate;
