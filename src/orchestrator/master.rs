@@ -88,6 +88,7 @@ pub struct MasterOptions {
     pub extra_tools: Vec<crate::tools::ToolRef>,
     /// total task token budget (0 = unlimited); 60% is split evenly across the workers
     pub task_budget: u64,
+    pub llm_compaction: bool,
 }
 
 fn worker_task(s: &Subtask, all: &[Subtask], goal: &str) -> String {
@@ -116,6 +117,7 @@ async fn run_worker(o: &MasterOptions, s: &Subtask, all: &[Subtask], goal: &str,
     ao.tools.extend(o.extra_tools.iter().cloned());
     ao.tools.push(Arc::new(RequestEdit::new(&s.id, blocked.clone())) as ToolRef);
     ao.token_budget = budget;
+    ao.llm_compaction = o.llm_compaction;
     let mut task = worker_task(s, all, goal);
     if !extra_note.is_empty() {
         task.push_str("\n\n");

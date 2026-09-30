@@ -146,3 +146,46 @@ async fn agent_abort_mid_request() {
     let r = run_agent("t", o).await;
     assert_eq!(r.stopped, Stopped::Aborted);
 }
+
+#[tokio::test]
+async fn llm_compaction_keeps_an_early_fact_that_pruning_would_lose() {
+    let d = tempfile::tempdir().unwrap();
+    std::fs::write(d.path().join("a.txt"), format!("the launch code is ZX-42\n{}", "padding ".repeat(400))).unwrap();
+    std::fs::write(d.path().join("big.txt"), "filler line\n".repeat(2000)).unwrap();
+    let run = |compaction: bool| {
+        let d = d.path().to_path_buf();
+        async move {
+            let m = testkit::start(0, None).await;
+            let step = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            m.set_fallback(move |req| {
+                let msgs = req["messages"].as_array().unwrap();
+                let sys = msgs[0]["content"].as_str().unwrap_or("");
+                let all: String = msgs.iter().map(|x| x["content"].as_str().unwrap_or("").to_string()).collect::<Vec<_>>().join("\n");
+                if sys.contains("compress the working history") {
+                    // a faithful summary of what it was shown
+                    return Scripted::text(if all.contains("ZX-42") { "Read a.txt: it states the launch code is ZX-42." } else { "nothing notable" });
+                }
+                let tools = step.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if tools == 0 {
+                    return Scripted::call("read_file", json!({"path": "a.txt"}));
+                }
+                if tools < 14 {
+                    return Scripted::call("read_file", json!({"path": "big.txt", "offset": tools * 100, "limit": 90}));
+                }
+                Scripted::text(if all.contains("ZX-42") { "code ZX-42" } else { "code unknown" })
+            });
+            let mut o = AgentOptions::new(LlmClient::new(cfg(&m.url), Env::new()), &d, Mode::Yolo);
+            o.context_window = 3000;
+            o.llm_compaction = compaction;
+            o.max_steps = 30;
+            let r = run_agent("what is the launch code? read a.txt first", o).await;
+            (r.final_text, m.requests().iter().filter(|q| q["messages"][0]["content"].as_str().unwrap_or("").contains("compress the working history")).count())
+        }
+    };
+    let (with, summaries) = run(true).await;
+    assert_eq!(with, "code ZX-42");
+    assert!(summaries >= 1);
+    let (without, none) = run(false).await;
+    assert_eq!(without, "code unknown", "deterministic pruning alone loses the early fact");
+    assert_eq!(none, 0);
+}

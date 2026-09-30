@@ -30,6 +30,7 @@ fn opts(m: &Mock, cwd: &Path, budget: u64) -> MasterOptions {
         confirm: None,
         extra_tools: vec![],
         task_budget: budget,
+        llm_compaction: false,
     }
 }
 

@@ -275,6 +275,7 @@ impl Engine {
         ao.cancel = o.cancel.clone();
         ao.context = Some(context.to_string());
         ao.context_window = self.cfg.context_window;
+        ao.llm_compaction = self.cfg.llm_compaction;
         ao.wrap_shell = wrap.clone();
         if let Some(t) = self.mcp.get() {
             ao.tools.extend(t.iter().cloned());
@@ -547,6 +548,7 @@ impl Engine {
                 confirm: self.agent_options(&o, &context, &wrap).confirm,
                 extra_tools: self.mcp.get().cloned().unwrap_or_default(),
                 task_budget: self.cfg.max_task_tokens,
+                llm_compaction: self.cfg.llm_compaction,
             };
             workers = run_workers(&plan.enriched, &plan.subtasks, &mo).await;
         } else {

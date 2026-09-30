@@ -66,6 +66,8 @@ pub struct Config {
     pub verify_rounds_auto: usize,
     /// total prompt+completion tokens one task may use across all rounds and workers (0 = unlimited)
     pub max_task_tokens: u64,
+    /// summarize old steps with one extra thinking-off call when the context fills up
+    pub llm_compaction: bool,
     /// where the API key comes from when the env var is unset: auto | env | keychain
     pub api_key_store: String,
     /// mTLS: PEM file with the client certificate (and, unless `clientKey` is set, its private key)
@@ -102,6 +104,7 @@ impl Default for Config {
             verify_rounds_normal: 2,
             verify_rounds_auto: 5,
             max_task_tokens: 800_000,
+            llm_compaction: true,
             api_key_store: "auto".into(),
             telemetry: false,
             client_cert: String::new(),

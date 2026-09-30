@@ -1,4 +1,4 @@
-use super::context::compact;
+use super::context::{compact, est_tokens, llm_compact};
 use super::permissions::{decide, Decision};
 use super::prompt::SYSTEM_PROMPT;
 use crate::config::{redact, Env};
@@ -49,11 +49,13 @@ pub struct AgentOptions {
     pub hooks: Option<Arc<crate::hooks::Hooks>>,
     /// stop (Stopped::Budget) once this many prompt+completion tokens were used by this agent
     pub token_budget: Option<u64>,
+    /// summarize old steps with a thinking-off call when the history exceeds the budget (before deterministic pruning)
+    pub llm_compaction: bool,
 }
 
 impl AgentOptions {
     pub fn new(llm: LlmClient, cwd: impl Into<PathBuf>, mode: Mode) -> Self {
-        AgentOptions { llm, cwd: cwd.into(), mode, thinking: None, max_steps: 40, cancel: None, tools: all_tools(), owned_globs: None, confirm: None, events: Events::default(), context: None, history: None, context_window: 131072, wrap_shell: None, hooks: None, token_budget: None }
+        AgentOptions { llm, cwd: cwd.into(), mode, thinking: None, max_steps: 40, cancel: None, tools: all_tools(), owned_globs: None, confirm: None, events: Events::default(), context: None, history: None, context_window: 131072, wrap_shell: None, hooks: None, token_budget: None, llm_compaction: false }
     }
 }
 
@@ -137,6 +139,14 @@ pub async fn run_agent(task: &str, o: AgentOptions) -> AgentResult {
                 }
             }
         };
+        if o.llm_compaction && est_tokens(&messages) > budget {
+            if let Some(m) = llm_compact(&o.llm, &messages, budget, 4, o.cancel.clone()).await {
+                messages = m;
+                if let Some(n) = &o.events.notice {
+                    n("context summarized");
+                }
+            }
+        }
         let (compacted, pruned) = compact(&messages, budget, 6);
         if pruned > 0 {
             messages = compacted;
