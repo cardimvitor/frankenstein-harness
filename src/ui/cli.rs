@@ -33,6 +33,7 @@ Usage:
   fh resume [id]              continue an interrupted session with its stored plan and checkpoint
   fh record <id> --prompt \"..\" --oracle \"cmd\" [--base rev] [--solution rev] [--out eval/tasks]
                               snapshot your own work as an eval task (oracle must fail on base, pass with the solution)
+  fh mcp list|login <server>|logout <server>   MCP servers and OAuth sign-in for remote ones
   fh trust [--revoke|--list]  trust this repository: project hooks (.fh/hooks.json) and MCP servers (.fh/mcp.json) run only then
   fh activity                 recent skill activity
   fh history [skill]          version history (hash, reason, diff) of learned skills
@@ -228,6 +229,61 @@ pub async fn main(argv: Vec<String>) -> i32 {
                     1
                 }
             };
+        }
+        "mcp" => {
+            let (servers, notes) = crate::mcp::configured_servers(&cwd, &env);
+            for n in notes {
+                println!("{}", yellow(&n));
+            }
+            let store = crate::mcp::oauth::OAuthStore::new(crate::config::data_dir(&env).join("mcp-oauth.json"));
+            let find = |name: Option<&String>| -> Option<(String, crate::mcp::ServerConfig)> { name.and_then(|n| servers.iter().find(|(x, _)| x == n).cloned()) };
+            match args.positional.first().map(|s| s.as_str()) {
+                Some("login") => {
+                    let Some((name, cfg)) = find(args.positional.get(1)) else {
+                        eprintln!("usage: fh mcp login <server>  (servers: {})", servers.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>().join(", "));
+                        return 2;
+                    };
+                    let crate::mcp::ServerConfig::Http { url, headers } = cfg else {
+                        eprintln!("{name} is a local (stdio) server; OAuth sign-in applies to remote servers");
+                        return 2;
+                    };
+                    let opener: Arc<dyn Fn(&str) + Send + Sync> = Arc::new(|u| {
+                        println!("Open this URL to sign in:\n\n  {u}\n\nWaiting for the browser (5 minutes)…");
+                        let _ = if cfg!(target_os = "macos") { std::process::Command::new("open").arg(u).spawn() } else if cfg!(windows) { std::process::Command::new("cmd").args(["/C", "start", "", u]).spawn() } else { std::process::Command::new("xdg-open").arg(u).stderr(std::process::Stdio::null()).stdout(std::process::Stdio::null()).spawn() };
+                    });
+                    return match crate::mcp::oauth::login(&name, &url, &headers, &store, opener, Duration::from_secs(300)).await {
+                        Ok(()) => {
+                            println!("{}", green(&format!("signed in to {name}")));
+                            0
+                        }
+                        Err(e) => {
+                            eprintln!("sign-in failed: {e}");
+                            1
+                        }
+                    };
+                }
+                Some("logout") => {
+                    let name = args.positional.get(1).cloned().unwrap_or_default();
+                    match store.remove(&name) {
+                        Ok(true) => println!("signed out of {name}"),
+                        Ok(false) => println!("{name}: no stored sign-in"),
+                        Err(e) => eprintln!("{e}"),
+                    }
+                    return 0;
+                }
+                _ => {
+                    if servers.is_empty() {
+                        println!("no MCP servers configured (.fh/mcp.json or the user mcp.json)");
+                    }
+                    for (n, c) in &servers {
+                        match c {
+                            crate::mcp::ServerConfig::Stdio { command, .. } => println!("{n:<20} stdio  {command}"),
+                            crate::mcp::ServerConfig::Http { url, .. } => println!("{n:<20} http   {url}  {}", if store.get(n).is_some() { green("signed in") } else { dim("no stored sign-in (fh mcp login if the server needs it)") }),
+                        }
+                    }
+                    return 0;
+                }
+            }
         }
         "trust" => {
             if args.has("list") {

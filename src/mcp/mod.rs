@@ -3,6 +3,8 @@
 //! `{"mcpServers": {name: {command,args,env} | {url,headers}}}` shape used by other MCP clients.
 //! Secrets: `${VAR}` reads the environment, `${keychain:ACCOUNT}` the OS keychain; nothing secret lives in the file.
 //! Tools appear as `mcp__<server>__<tool>`, are treated as mutating unless the server sets `readOnlyHint`.
+pub mod oauth;
+
 use crate::config::{config_dir, Env};
 use crate::tools::{Tool, ToolCtx, ToolRef, ToolResult};
 use crate::types::ToolSpec;
@@ -60,7 +62,7 @@ type Pending = Arc<Mutex<HashMap<u64, oneshot::Sender<Value>>>>;
 
 enum Transport {
     Stdio { stdin: tokio::sync::Mutex<ChildStdin>, pending: Pending, _child: Mutex<Child> },
-    Http { client: reqwest::Client, url: String, headers: HashMap<String, String>, session: Mutex<Option<String>> },
+    Http { client: reqwest::Client, url: String, headers: HashMap<String, String>, session: Mutex<Option<String>>, oauth: Option<Arc<oauth::OAuthSession>> },
 }
 
 pub struct McpClient {
@@ -79,6 +81,11 @@ pub struct McpToolInfo {
 
 impl McpClient {
     pub async fn connect(name: &str, cfg: &ServerConfig, cwd: &Path) -> Result<Arc<McpClient>, String> {
+        Self::connect_auth(name, cfg, cwd, None).await
+    }
+
+    /// `oauth`: a signed-in session for a remote server that requires OAuth (see `fh mcp login`).
+    pub async fn connect_auth(name: &str, cfg: &ServerConfig, cwd: &Path, oauth: Option<Arc<oauth::OAuthSession>>) -> Result<Arc<McpClient>, String> {
         let t = match cfg {
             ServerConfig::Stdio { command, args, env, cwd: c } => {
                 let mut cmd = Command::new(command);
@@ -110,7 +117,7 @@ impl McpClient {
                 });
                 Transport::Stdio { stdin: tokio::sync::Mutex::new(stdin), pending, _child: Mutex::new(child) }
             }
-            ServerConfig::Http { url, headers } => Transport::Http { client: reqwest::Client::new(), url: url.clone(), headers: headers.clone(), session: Mutex::new(None) },
+            ServerConfig::Http { url, headers } => Transport::Http { client: reqwest::Client::new(), url: url.clone(), headers: headers.clone(), session: Mutex::new(None), oauth },
         };
         let c = Arc::new(McpClient { name: name.to_string(), t, next: AtomicU64::new(1) });
         c.request("initialize", json!({"protocolVersion": PROTOCOL, "capabilities": {}, "clientInfo": {"name": "frankenstein-harness", "version": env!("CARGO_PKG_VERSION")}}), Duration::from_secs(30), None).await?;
@@ -140,25 +147,44 @@ impl McpClient {
     }
 
     async fn http_post(&self, body: &Value) -> Result<(String, String), String> {
-        let Transport::Http { client, url, headers, session } = &self.t else { return Err("not http".into()) };
-        let mut rb = client.post(url).header("content-type", "application/json").header("accept", "application/json, text/event-stream").header("mcp-protocol-version", PROTOCOL);
-        for (k, v) in headers {
-            rb = rb.header(k, v);
+        let Transport::Http { client, url, headers, session, oauth } = &self.t else { return Err("not http".into()) };
+        let mut token = match oauth {
+            Some(o) => Some(o.access_token().await?),
+            None => None,
+        };
+        for attempt in 0..2 {
+            let mut rb = client.post(url).header("content-type", "application/json").header("accept", "application/json, text/event-stream").header("mcp-protocol-version", PROTOCOL);
+            for (k, v) in headers {
+                rb = rb.header(k, v);
+            }
+            if let Some(t) = &token {
+                rb = rb.header("authorization", format!("Bearer {t}"));
+            }
+            if let Some(s) = session.lock().unwrap().clone() {
+                rb = rb.header("mcp-session-id", s);
+            }
+            let resp = rb.body(body.to_string()).send().await.map_err(|e| format!("MCP http error: {e}"))?;
+            if let Some(s) = resp.headers().get("mcp-session-id").and_then(|h| h.to_str().ok()) {
+                *session.lock().unwrap() = Some(s.to_string());
+            }
+            let status = resp.status();
+            // an expired or revoked token: refresh once and retry
+            if status.as_u16() == 401 && attempt == 0 {
+                if let Some(o) = oauth {
+                    token = Some(o.refresh().await?);
+                    continue;
+                }
+            }
+            let ct = resp.headers().get("content-type").and_then(|h| h.to_str().ok()).unwrap_or("").to_string();
+            let www = resp.headers().get("www-authenticate").and_then(|h| h.to_str().ok()).unwrap_or("").to_string();
+            let text = resp.text().await.map_err(|e| e.to_string())?;
+            if !status.is_success() {
+                let hint = if status.as_u16() == 401 && oauth.is_none() && !www.is_empty() { format!(" — this server needs sign-in: run `fh mcp login {}`", self.name) } else { String::new() };
+                return Err(format!("MCP http {status}: {}{hint}", clip(&text, 300)));
+            }
+            return Ok((ct, text));
         }
-        if let Some(s) = session.lock().unwrap().clone() {
-            rb = rb.header("mcp-session-id", s);
-        }
-        let resp = rb.body(body.to_string()).send().await.map_err(|e| format!("MCP http error: {e}"))?;
-        if let Some(s) = resp.headers().get("mcp-session-id").and_then(|h| h.to_str().ok()) {
-            *session.lock().unwrap() = Some(s.to_string());
-        }
-        let status = resp.status();
-        let ct = resp.headers().get("content-type").and_then(|h| h.to_str().ok()).unwrap_or("").to_string();
-        let text = resp.text().await.map_err(|e| e.to_string())?;
-        if !status.is_success() {
-            return Err(format!("MCP http {status}: {}", clip(&text, 300)));
-        }
-        Ok((ct, text))
+        Err("MCP http: authentication failed".into())
     }
 
     /// JSON-RPC request; returns `result`, or the error message.
@@ -279,8 +305,8 @@ impl Tool for McpTool {
     }
 }
 
-/// Connect to every configured server and wrap its tools. Returns (tools, notices).
-pub async fn load_tools(cwd: &Path, env: &Env) -> (Vec<ToolRef>, Vec<String>) {
+/// Servers from the user file and (in a trusted workspace) the project file, plus notices about skipped files.
+pub fn configured_servers(cwd: &Path, env: &Env) -> (Vec<(String, ServerConfig)>, Vec<String>) {
     let mut servers: Vec<(String, ServerConfig)> = Vec::new();
     let mut notes = Vec::new();
     if let Ok(s) = std::fs::read_to_string(config_dir(env).join("mcp.json")) {
@@ -298,9 +324,17 @@ pub async fn load_tools(cwd: &Path, env: &Env) -> (Vec<ToolRef>, Vec<String>) {
             notes.push("project MCP servers (.fh/mcp.json) were skipped: this workspace is not trusted (run `fh trust`)".to_string());
         }
     }
+    (servers, notes)
+}
+
+/// Connect to every configured server and wrap its tools. Returns (tools, notices).
+pub async fn load_tools(cwd: &Path, env: &Env) -> (Vec<ToolRef>, Vec<String>) {
+    let (servers, mut notes) = configured_servers(cwd, env);
     let mut tools: Vec<ToolRef> = Vec::new();
+    let store = oauth::OAuthStore::new(crate::config::data_dir(env).join("mcp-oauth.json"));
     for (name, cfg) in servers {
-        match McpClient::connect(&name, &cfg, cwd).await {
+        let session = if matches!(cfg, ServerConfig::Http { .. }) { oauth::OAuthSession::new(&name, store.clone()) } else { None };
+        match McpClient::connect_auth(&name, &cfg, cwd, session).await {
             Err(e) => notes.push(e),
             Ok(client) => match client.list_tools().await {
                 Err(e) => notes.push(format!("MCP server \"{name}\": {e}")),
