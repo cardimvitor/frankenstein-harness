@@ -65,3 +65,10 @@ details pre { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; 
 .msg pre, details pre { max-width: 100%; overflow-x: auto; }
 details { overflow-wrap: anywhere; }
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; scroll-behavior: auto !important; } }
+
+.tree { font-size: 13px; font-family: var(--mono); max-height: 320px; overflow: auto; }
+.tree details { border: none; background: transparent; padding: 0 0 0 var(--s3); }
+.tree summary { min-height: 24px; color: var(--text); }
+.tree .file { padding-left: var(--s3); color: var(--muted); overflow-wrap: anywhere; }
+.tree .file.changed { color: var(--warn); font-weight: 600; }
+.hist { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; }

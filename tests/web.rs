@@ -237,3 +237,17 @@ async fn interactive_plan_approval_round_trip_and_rejection() {
     }
     panic!("task did not finish");
 }
+
+#[tokio::test]
+async fn tree_and_history_endpoints_need_auth_and_return_workspace_data() {
+    let e = setup(Env::new()).await;
+    let p = e.srv.port;
+    assert_eq!(http(p, Method::GET, "/api/tree", &[], None).await.status, 401);
+    assert_eq!(http(p, Method::GET, "/api/history", &[], None).await.status, 401);
+    let (_, cookie) = login(p, &e.srv.code()).await;
+    let t: Value = serde_json::from_str(&http(p, Method::GET, "/api/tree", &[("cookie", &cookie)], None).await.body).unwrap();
+    assert!(t["files"].as_array().unwrap().iter().any(|f| f == "mathx.py"));
+    assert!(!t["files"].as_array().unwrap().iter().any(|f| f.as_str().unwrap().starts_with(".git/")));
+    let h: Value = serde_json::from_str(&http(p, Method::GET, "/api/history", &[("cookie", &cookie)], None).await.body).unwrap();
+    assert!(h.is_array());
+}

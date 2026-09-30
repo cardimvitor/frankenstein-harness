@@ -64,6 +64,10 @@ pub struct Config {
     pub max_concurrency: usize,
     pub verify_rounds_normal: usize,
     pub verify_rounds_auto: usize,
+    /// total prompt+completion tokens one task may use across all rounds and workers (0 = unlimited)
+    pub max_task_tokens: u64,
+    /// where the API key comes from when the env var is unset: auto | env | keychain
+    pub api_key_store: String,
     pub sampling: SamplingSet,
 }
 
@@ -87,6 +91,8 @@ impl Default for Config {
             max_concurrency: 3,
             verify_rounds_normal: 2,
             verify_rounds_auto: 5,
+            max_task_tokens: 800_000,
+            api_key_store: "auto".into(),
             sampling: SamplingSet::default(),
         }
     }

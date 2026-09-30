@@ -8,8 +8,10 @@ use crate::orchestrator::governor::{Governor, MetricsFn};
 use crate::orchestrator::master::{owners_of, run_workers, MasterOptions, WorkerResult};
 use crate::agent::prompt::{context_block, ContextParts};
 use crate::session::checkpoint::{Changes, Checkpoints};
+use crate::skills::design::{design_note, detect_design, is_ui_task, DesignSignal};
 use crate::skills::gate::{gate, render_skills, render_user};
-use crate::skills::miner::{mine, promote_eligible, MineInput, MineOutcome};
+use crate::skills::store::{NewSkill, Scope};
+use crate::skills::miner::{improve_used, mine, promote_eligible, MineInput, MineOutcome};
 use crate::skills::police::{evaluate, POLICE_DEFAULTS};
 use crate::skills::reuse::{accept_reuse, find_reuse_offers, ReuseOffer};
 use crate::skills::store::{Skill, SkillStore};
@@ -320,6 +322,52 @@ impl Engine {
             io.notice(NoticeKind::Skill, &format!("using {} skill \"{}\"", s.scope.as_str(), s.name));
         }
 
+        // UI style order: the project's own design system or patterns first, the HIG-based default otherwise
+        if is_ui_task(task) {
+            let hig = "hig-ui-baseline";
+            match detect_design(&self.cwd) {
+                DesignSignal::Strong(name) => {
+                    g.selected.retain(|s| s.name != hig);
+                    let exists = self.store.user_skills(Some(&fp.project_id)).iter().any(|s| s.name == "Design system" && s.project_id.as_deref() == Some(fp.project_id.as_str()));
+                    if !exists {
+                        if let Ok(id) = self.store.add(NewSkill { name: "Design system".into(), scope: Scope::Project, stack: None, versions: None, project_id: Some(fp.project_id.clone()), source: "auto".into(), origin: None, summary: format!("UI follows {name}"), keywords: "ui design system components theme style".into(), body: design_note(&name) }, "detected design system") {
+                            if let Some(sk) = self.store.get(&id) {
+                                g.selected.push(sk);
+                            }
+                        }
+                    }
+                    io.notice(NoticeKind::Skill, &format!("UI style: following the project's design system ({name})"));
+                }
+                DesignSignal::Weak => {
+                    let use_default = if o.auto {
+                        false
+                    } else {
+                        let a = io.ask_questions(vec!["This project has UI code but no explicit design system. Follow its existing patterns (Enter), or use the HIG-based default? (type 'default' for HIG)".to_string()]).await;
+                        a.first().map(|x| { let l = x.to_lowercase(); l.contains("default") || l.contains("hig") || l.trim() == "2" }).unwrap_or(false)
+                    };
+                    if use_default {
+                        if let Some(h) = self.store.builtins.iter().find(|s| s.name == hig) {
+                            if !g.selected.iter().any(|s| s.name == hig) {
+                                g.selected.push(h.clone());
+                            }
+                        }
+                        io.notice(NoticeKind::Skill, "UI style: using the HIG-based default");
+                    } else {
+                        g.selected.retain(|s| s.name != hig);
+                        io.notice(NoticeKind::Skill, "UI style: following the project's existing UI patterns");
+                    }
+                }
+                DesignSignal::None => {
+                    if let Some(h) = self.store.builtins.iter().find(|s| s.name == hig) {
+                        if !g.selected.iter().any(|s| s.name == hig) {
+                            g.selected.push(h.clone());
+                        }
+                    }
+                    io.notice(NoticeKind::Skill, "UI style: new project, using the HIG-based default");
+                }
+            }
+        }
+
         // intake funnel
         io.notice(NoticeKind::Phase, if o.auto { "planning (autonomous)" } else { "inspecting repository and planning" });
         let ti = Instant::now();
@@ -457,6 +505,7 @@ impl Engine {
         let allowed = allowed_from_plan(&plan.plan, &subtasks);
         let ctx = VerifyCtx { cwd: &self.cwd, cp: &cp, base: &base_cp, fp: &fp, llm: Some(&self.llm), acceptance: &plan.acceptance, allowed_globs: allowed, max_rounds, cancel: o.cancel.clone() };
         let mut vstate = VerifyState::default();
+        let mut budget_hit = false;
         for round in 1..=max_rounds {
             if o.cancel.as_ref().map(|c| c.is_cancelled()).unwrap_or(false) {
                 break;
@@ -465,6 +514,12 @@ impl Engine {
             let failed: Vec<String> = r.checks.iter().filter(|c| c.status == crate::verify::checks::Status::Fail).map(|c| c.name.clone()).collect();
             io.notice(NoticeKind::Verify, &format!("round {round}: {}{}", r.verdict.as_str(), if failed.is_empty() { String::new() } else { format!(" (failed: {})", failed.join(", ")) }));
             if r.verdict != Verdict::Fail || round == max_rounds {
+                break;
+            }
+            let used_tokens = self.llm.stats().prompt_tokens + self.llm.stats().completion_tokens;
+            if self.cfg.max_task_tokens > 0 && used_tokens >= self.cfg.max_task_tokens {
+                io.notice(NoticeKind::Warn, &format!("token budget reached ({used_tokens} of {}); stopping verification rounds", self.cfg.max_task_tokens));
+                budget_hit = true;
                 break;
             }
             let feedback = feedback_from(&r);
@@ -506,7 +561,10 @@ impl Engine {
                 }
             }
         }
-        let report: VerifyReport = finalize(vstate);
+        let mut report: VerifyReport = finalize(vstate);
+        if budget_hit && report.verdict == Verdict::Fail {
+            report.reason = format!("token budget exhausted after {} round(s); {}", report.rounds.len(), report.reason);
+        }
         timings.verify_ms = tv.elapsed().as_millis() as u64;
         let ch: Changes = if base_cp.is_empty() { Changes::default() } else { cp.changed_since(&base_cp).await };
         let changed_all = ch.all();
@@ -545,13 +603,25 @@ impl Engine {
         for s in &used {
             self.store.log("used", &s.name, &format!("task {}", report.verdict.as_str()), Some(&fp.project_id));
         }
+        self.store.record_verify_stats(&task_id, (report.reviewer.raised, report.reviewer.valid, report.reviewer.dropped, report.reviewer.blockers), report.rounds.len(), report.verdict.as_str(), self.llm.stats().prompt_tokens + self.llm.stats().completion_tokens, t0.elapsed().as_millis() as u64);
         if !o.no_mine {
             let (store, llm, io2, fp2) = (self.store.clone(), self.llm.clone(), io.clone(), fp.clone());
             let (task_s, changed2, verdict) = (task.to_string(), changed_all.clone(), report.verdict.as_str().to_string());
             let diff2 = if report.verdict == Verdict::Pass { task_diff.chars().take(6000).collect::<String>() } else { String::new() };
+            let rounds_used = report.rounds.len();
+            let used2 = used.clone();
             let h = tokio::spawn(async move {
                 evaluate(&store, POLICE_DEFAULTS);
                 promote_eligible(&store, POLICE_DEFAULTS.promote_n);
+                if verdict == "pass" && rounds_used > 1 {
+                    // IMPROVE: a used skill did not prevent rework
+                    for sk in used2.iter().filter(|s| s.source != "builtin") {
+                        if let Some(n) = improve_used(&store, &llm, sk, MineInput { task: &task_s, diff: &diff2, changed: &changed2, fp: &fp2, verdict: &verdict }, None).await {
+                            io2.notice(NoticeKind::Skill, &format!("improved project skill: {n}"));
+                            break;
+                        }
+                    }
+                }
                 if verdict == "pass" {
                     if let MineOutcome::Created(n) = mine(&store, &llm, MineInput { task: &task_s, diff: &diff2, changed: &changed2, fp: &fp2, verdict: &verdict }, None).await {
                         io2.notice(NoticeKind::Skill, &format!("learned a new project skill: {n}"));

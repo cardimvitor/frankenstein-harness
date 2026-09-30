@@ -321,6 +321,21 @@ async fn activity(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
     Json(app.engine.store.activity(50).into_iter().map(|a| json!({"ts": a.ts, "kind": a.kind, "skill": a.skill, "reason": a.reason})).collect::<Vec<_>>()).into_response()
 }
 
+async fn tree(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
+    if !authed(&app, &headers) {
+        return err(StatusCode::UNAUTHORIZED, "not authenticated");
+    }
+    let files = crate::tools::fs::list_all(&app.engine.cwd, 3000);
+    Json(json!({"files": files})).into_response()
+}
+
+async fn history(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
+    if !authed(&app, &headers) {
+        return err(StatusCode::UNAUTHORIZED, "not authenticated");
+    }
+    Json(app.engine.store.history("").into_iter().map(|(name, v, hash, reason, diff)| json!({"skill": name, "version": v, "hash": hash, "reason": reason, "diff": diff.chars().take(2000).collect::<String>()})).collect::<Vec<_>>()).into_response()
+}
+
 async fn task(State(app): State<Arc<App>>, headers: HeaderMap, Json(b): Json<Value>) -> Response {
     if !authed(&app, &headers) {
         return err(StatusCode::UNAUTHORIZED, "not authenticated");
@@ -416,6 +431,8 @@ pub async fn start_web_server(cfg: Config, env: Env, cwd: PathBuf, o: ServeOptio
         .route("/api/events", get(events))
         .route("/api/state", get(state))
         .route("/api/activity", get(activity))
+        .route("/api/tree", get(tree))
+        .route("/api/history", get(history))
         .route("/api/task", post(task))
         .route("/api/answer", post(answer))
         .route("/api/cancel", post(cancel))

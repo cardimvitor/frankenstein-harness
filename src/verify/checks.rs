@@ -165,5 +165,11 @@ pub async fn diff_checks(cp: &Checkpoints, base: &str, allowed_globs: Option<&[S
     results.push(mk("test integrity", CheckKind::TestsIntegrity, bad, "no tests deleted or skipped".into()));
     let conflict: Vec<String> = added.iter().filter(|a| a.text.starts_with("<<<<<<< ") || a.text.starts_with(">>>>>>> ") || a.text == "=======").map(|a| format!("{}:{}: conflict marker", a.file, a.line)).collect();
     results.push(mk("patch sanity", CheckKind::Patch, conflict, "no conflict markers".into()));
+    let patch = cp.patch_since(base).await;
+    let applies = match cp.patch_applies(base, &patch).await {
+        Ok(()) => vec![],
+        Err(e) => vec![format!("patch does not apply cleanly to the base: {e}")],
+    };
+    results.push(mk("patch applies", CheckKind::Patch, applies, "patch applies cleanly to the base".into()));
     DiffChecks { results, diff, changed }
 }

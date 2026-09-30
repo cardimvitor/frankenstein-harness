@@ -126,3 +126,30 @@ pub fn promote_eligible(store: &SkillStore, promote_n: usize) -> Vec<String> {
     }
     promoted
 }
+
+pub fn improve_schema() -> Value {
+    json!({"type":"object","properties":{"improve":{"type":"boolean"},"body":{"type":"string"},"reason":{"type":"string"}},"required":["improve"]})
+}
+
+/// IMPROVE decision: a skill was used but the task still needed several verification rounds. Ask (post-delivery,
+/// rate-limited) whether the note should be sharpened. Built-in skills are immutable and never changed.
+pub async fn improve_used(store: &SkillStore, llm: &LlmClient, skill: &Skill, i: MineInput<'_>, cancel: Option<CancellationToken>) -> Option<String> {
+    if skill.source == "builtin" || i.verdict != "pass" || !mine_allowed(store, &i.fp.project_id, now_ms(), 10 * 60_000, 12) {
+        return None;
+    }
+    let prompt = [
+        "A private engineering guidance note was used for a task, but the task needed extra verification rounds before it passed.".to_string(),
+        "Decide whether the note is missing something that would have avoided the rework. If so, return the FULL improved note (3-8 short bullet lines, guidance only: no commands, no URLs, no secrets). Otherwise {\"improve\": false}.".to_string(),
+        format!("Current note \"{}\":\n{}", skill.name, skill.body),
+        format!("Task: {}", i.task.chars().take(600).collect::<String>()),
+        format!("Diff excerpt:\n{}", clip(i.diff, 3000)),
+    ]
+    .join("\n\n");
+    let r = llm.json(ChatOptions { messages: vec![Message::system("Output only JSON."), Message::user(prompt)], thinking: Thinking::Off, max_tokens: Some(700), json_schema: Some(improve_schema()), cancel, ..Default::default() }).await.ok()?;
+    let v = r.value?;
+    if v.get("improve").and_then(|x| x.as_bool()) != Some(true) {
+        return None;
+    }
+    let body = v.get("body")?.as_str()?;
+    store.improve(&skill.id, body, v.get("reason").and_then(|x| x.as_str()).unwrap_or("sharpened after a task that needed rework")).ok().map(|_| skill.name.clone())
+}

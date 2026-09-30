@@ -185,6 +185,7 @@ impl SkillStore {
              CREATE TABLE IF NOT EXISTS tasks(id TEXT PRIMARY KEY, project_id TEXT, verdict TEXT, rounds INTEGER, ts INTEGER);
              CREATE TABLE IF NOT EXISTS task_skills(task_id TEXT, skill_id TEXT, skill_version INTEGER);
              CREATE TABLE IF NOT EXISTS activity(ts INTEGER, kind TEXT, skill TEXT, reason TEXT, project_id TEXT);
+             CREATE TABLE IF NOT EXISTS verify_stats(task_id TEXT PRIMARY KEY, raised INTEGER, valid INTEGER, dropped INTEGER, blockers INTEGER, rounds INTEGER, verdict TEXT, tokens INTEGER, ms INTEGER, ts INTEGER);
              CREATE TABLE IF NOT EXISTS suppressed(skill_id TEXT PRIMARY KEY, reason TEXT, ts INTEGER);",
         )?;
         Ok(SkillStore { conn: Arc::new(Mutex::new(conn)), builtins: Arc::new(load_builtins()) })
@@ -368,5 +369,50 @@ impl SkillStore {
         for s in skills {
             let _ = c.execute("INSERT INTO task_skills VALUES (?,?,?)", params![task_id, s.id, s.version]);
         }
+    }
+}
+
+/// Aggregate runtime statistics shown by `fh stats` (the verifier's own quality signals).
+#[derive(Clone, Debug, Default)]
+pub struct RunStats {
+    pub tasks: i64,
+    pub pass: i64,
+    pub fail: i64,
+    pub unverified: i64,
+    pub avg_rounds: f64,
+    pub reviewer_raised: i64,
+    pub reviewer_dropped: i64,
+    pub reviewer_blockers: i64,
+    pub avg_tokens: f64,
+}
+
+impl SkillStore {
+    pub fn record_verify_stats(&self, task_id: &str, s: (usize, usize, usize, usize), rounds: usize, verdict: &str, tokens: u64, ms: u64) {
+        let _ = self.conn().execute(
+            "INSERT OR REPLACE INTO verify_stats VALUES (?,?,?,?,?,?,?,?,?,?)",
+            params![task_id, s.0 as i64, s.1 as i64, s.2 as i64, s.3 as i64, rounds as i64, verdict, tokens as i64, ms as i64, now_ms()],
+        );
+    }
+
+    pub fn run_stats(&self) -> RunStats {
+        let c = self.conn();
+        let mut st = RunStats::default();
+        let _ = c.query_row(
+            "SELECT COUNT(*), COALESCE(SUM(verdict='pass'),0), COALESCE(SUM(verdict='fail'),0), COALESCE(SUM(verdict='unverified'),0), COALESCE(AVG(rounds),0), COALESCE(SUM(raised),0), COALESCE(SUM(dropped),0), COALESCE(SUM(blockers),0), COALESCE(AVG(tokens),0) FROM verify_stats",
+            [],
+            |r| {
+                st = RunStats { tasks: r.get(0)?, pass: r.get(1)?, fail: r.get(2)?, unverified: r.get(3)?, avg_rounds: r.get(4)?, reviewer_raised: r.get(5)?, reviewer_dropped: r.get(6)?, reviewer_blockers: r.get(7)?, avg_tokens: r.get(8)? };
+                Ok(())
+            },
+        );
+        st
+    }
+
+    /// Version history of skills matching `name` (case-insensitive substring): (skill, version, hash, reason, diff).
+    pub fn history(&self, name: &str) -> Vec<(String, i64, String, String, String)> {
+        let like = format!("%{}%", name.to_lowercase());
+        let c = self.conn();
+        let mut st = c.prepare("SELECT s.name, v.version, v.hash, v.reason, v.diff FROM skill_versions v JOIN skills s ON s.id=v.skill_id WHERE lower(s.name) LIKE ? ORDER BY s.name, v.version").unwrap();
+        st.query_map([like], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))).unwrap().flatten().collect()
     }
 }

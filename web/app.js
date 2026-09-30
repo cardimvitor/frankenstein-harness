@@ -115,6 +115,7 @@ const handlers = {
     if (r.timings) card.append(el('p', 'muted small', `${(r.timings.totalMs / 1000).toFixed(1)}s · ${r.rounds} verification round(s) · ${r.llm?.completionTokens ?? 0} tokens out`));
     if (r.diff) { const det = el('details'); det.append(el('summary', '', 'View diff'), el('pre', '', r.diff)); card.append(det); }
     add(card);
+    changedSet = new Set(r.changed ?? []); loadSideData();
     const files = resetList('files', r.changed?.length ? '' : 'None');
     for (const f of r.changed ?? []) li(files, '', f);
     const v = resetList('verify', r.verify?.rounds?.length ? '' : 'No checks');
@@ -131,6 +132,27 @@ function connect() {
   es.onerror = () => { es.close(); setTimeout(connect, 1500); };
 }
 
+let changedSet = new Set();
+async function loadTree() {
+  const r = await api('/api/tree'); if (!r.ok) return;
+  const root = {}; 
+  for (const f of r.json.files) { let n = root; const parts = f.split('/'); parts.slice(0, -1).forEach((p) => { n = n[p] = n[p] || {}; }); n[parts.at(-1)] = f; }
+  const draw = (node, into) => {
+    for (const [k, v] of Object.entries(node).sort(([a, x], [b, y]) => (typeof x === 'object') === (typeof y === 'object') ? a.localeCompare(b) : (typeof x === 'object' ? -1 : 1))) {
+      if (typeof v === 'string') { into.append(el('div', `file${changedSet.has(v) ? ' changed' : ''}`, k)); continue; }
+      const d = el('details'); d.append(el('summary', '', k)); draw(v, d); into.append(d);
+    }
+  };
+  const t = $('tree'); t.replaceChildren(); draw(root, t);
+}
+async function loadSideData() {
+  const a = await api('/api/activity');
+  if (a.ok && a.json.length) { const l = resetList('skills', ''); for (const x of a.json.slice(0, 12)) li(l, '', `${x.kind}: ${x.skill} — ${x.reason}`); }
+  const h = await api('/api/history');
+  if (h.ok && h.json.length) { const l = resetList('history', ''); for (const x of h.json.slice(-12)) { const n = li(l, 'hist', `${x.skill} v${x.version} ${x.hash}\n${x.reason}`); } }
+  await loadTree();
+}
+
 async function boot() {
   const st = await api('/api/state');
   if (st.status === 401) { $('login').hidden = false; $('code').focus(); return; }
@@ -138,6 +160,7 @@ async function boot() {
   $('model').textContent = st.json.model || '';
   setBusy(!!st.json.busy);
   connect();
+  loadSideData();
 }
 
 $('login-form').addEventListener('submit', async (e) => {

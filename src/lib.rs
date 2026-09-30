@@ -16,3 +16,5 @@ pub mod engine;
 pub mod eval;
 pub mod validate;
 pub mod ui;
+pub mod secrets;
+pub mod tui;

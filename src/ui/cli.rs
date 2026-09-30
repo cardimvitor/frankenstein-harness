@@ -11,6 +11,7 @@ use crate::util::sandbox::sandbox_for;
 use crate::validate::vllm::{validate_vllm, ValidateOptions};
 use serde_json::Value;
 use std::collections::HashMap;
+use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -19,7 +20,8 @@ use tokio_util::sync::CancellationToken;
 pub const HELP: &str = "Frankenstein Harness (fh) — coding agent for Qwen on vLLM
 
 Usage:
-  fh                          interactive chat in the current directory
+  fh                          full-screen terminal UI in the current directory (use --plain for a line chat)
+  fh tui                      the same, explicitly
   fh run \"<task>\" [options]   run one task
   fh serve [--port N]         local web UI (127.0.0.1 only)
   fh doctor                   check endpoint, model, auth, metrics, sandbox
@@ -27,6 +29,9 @@ Usage:
   fh eval --tasks <dir> [options]   run the eval corpus (--runner fh|qwen|both)
   fh undo                     restore the working tree to the last checkpoint
   fh activity                 recent skill activity
+  fh history [skill]          version history (hash, reason, diff) of learned skills
+  fh stats                    runtime statistics: verdicts, rounds, reviewer quality, tokens per task
+  fh auth set|clear|status    store the API key in the OS keychain (Linux secret-tool, macOS Keychain)
 
 Options for run/chat:
   --auto            autonomous: no plan approval or questions, up to 5 verification rounds
@@ -38,7 +43,8 @@ Options for run/chat:
   --sandbox         confine shell commands (bwrap on Linux, Seatbelt on macOS)
   --json            print the machine-readable result
   --cwd <dir>       workspace (default: current directory)
-  --thinking        show model reasoning
+  --thinking        show model reasoning (plain mode; in the TUI press Ctrl+T)
+  --plain           line-based chat instead of the full-screen UI
 
 Environment: FH_ENDPOINT, FH_MODEL, FH_API_KEY (or the variable named by FH_API_KEY_ENV), FH_AUTH_SCHEME, FH_METRICS_URL, FH_HOME";
 
@@ -145,7 +151,7 @@ pub async fn main(argv: Vec<String>) -> i32 {
         eprintln!("no such directory: {}", cwd.display());
         return 2;
     }
-    let env = process_env();
+    let mut env = process_env();
     let cfg = match load_config(&cwd, &env) {
         Ok(c) => c,
         Err(e) => {
@@ -153,6 +159,12 @@ pub async fn main(argv: Vec<String>) -> i32 {
             return 2;
         }
     };
+    // API key: env var first, then the OS keychain (unless configured otherwise)
+    if cfg.api_key_store != "env" && cfg.auth_scheme != "none" && env.get(&cfg.api_key_env).map(|s| s.is_empty()).unwrap_or(true) {
+        if let Some(k) = crate::secrets::get(&cfg.api_key_env) {
+            env.insert(cfg.api_key_env.clone(), k);
+        }
+    }
     let approval = match args.get("mode").map(|m| (m, Mode::parse(m))) {
         None => Mode::AutoEdit,
         Some((_, Some(m))) => m,
@@ -187,6 +199,68 @@ pub async fn main(argv: Vec<String>) -> i32 {
             }
             let files = cp.restore(&last).await;
             println!("restored {} file(s) to checkpoint {}", files.len(), &last[..8.min(last.len())]);
+            return 0;
+        }
+        "stats" => {
+            match SkillStore::open(&env) {
+                Ok(s) => {
+                    let r = s.run_stats();
+                    if r.tasks == 0 {
+                        println!("no tasks recorded yet");
+                    } else {
+                        println!("tasks {}: pass {} · fail {} · unverified {} · avg rounds {:.2} · avg tokens/task {:.0}", r.tasks, r.pass, r.fail, r.unverified, r.avg_rounds, r.avg_tokens);
+                        println!("reviewer findings raised {} · dropped as uncheckable {} ({:.0}%) · blockers {}", r.reviewer_raised, r.reviewer_dropped, if r.reviewer_raised > 0 { 100.0 * r.reviewer_dropped as f64 / r.reviewer_raised as f64 } else { 0.0 }, r.reviewer_blockers);
+                        println!("{}", dim("A high dropped share means the reviewer cites lines it cannot support; verifier false positives are measured against an oracle by `fh eval`."));
+                    }
+                }
+                Err(e) => eprintln!("cannot open skill store: {e}"),
+            }
+            return 0;
+        }
+        "history" => {
+            match SkillStore::open(&env) {
+                Ok(s) => {
+                    let rows = s.history(args.positional.first().map(|s| s.as_str()).unwrap_or(""));
+                    if rows.is_empty() {
+                        println!("no learned skills yet");
+                    }
+                    for (name, ver, hash, reason, diff) in rows {
+                        println!("{} v{ver}  {hash}  {reason}", bold(&name));
+                        for l in diff.lines().take(12) {
+                            println!("    {}", if l.starts_with('+') { green(l) } else { red(l) });
+                        }
+                    }
+                }
+                Err(e) => eprintln!("cannot open skill store: {e}"),
+            }
+            return 0;
+        }
+        "auth" => {
+            let acct = cfg.api_key_env.clone();
+            match args.positional.first().map(|s| s.as_str()) {
+                Some("set") => {
+                    let k = tokio::task::spawn_blocking(|| read_secret_blocking("API key (input hidden): ")).await.unwrap_or_default();
+                    if k.is_empty() {
+                        eprintln!("empty key, nothing stored");
+                        return 2;
+                    }
+                    match crate::secrets::set(&acct, &k) {
+                        Ok(()) => println!("stored in the OS keychain as {acct}"),
+                        Err(e) => {
+                            eprintln!("could not store the key: {e}");
+                            return 1;
+                        }
+                    }
+                }
+                Some("clear") => match crate::secrets::clear(&acct) {
+                    Ok(()) => println!("removed {acct} from the OS keychain"),
+                    Err(e) => {
+                        eprintln!("{e}");
+                        return 1;
+                    }
+                },
+                _ => println!("{acct}: env {} · keychain {}", if env.get(&acct).map(|s| !s.is_empty()).unwrap_or(false) { "set" } else { "not set" }, if crate::secrets::get(&acct).is_some() { "set" } else { "not set" }),
+            }
             return 0;
         }
         "validate-vllm" => {
@@ -269,6 +343,17 @@ pub async fn main(argv: Vec<String>) -> i32 {
                 "unverified" => 3,
                 _ => 1,
             }
+        }
+        "tui" | "" if args.cmd == "tui" || (std::io::stdout().is_terminal() && std::io::stdin().is_terminal() && !args.has("plain")) => {
+            drop(engine);
+            let store = match SkillStore::open(&env) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("cannot open skill store: {e}");
+                    return 1;
+                }
+            };
+            crate::tui::run::run_tui(cfg.clone(), env.clone(), cwd.clone(), store, crate::tui::run::TuiOptions { approval, auto: args.has("auto"), sandbox: args.has("sandbox"), commit: args.has("commit") }).await
         }
         "" | "chat" => {
             println!("{}", bold("Frankenstein Harness") + &dim(&format!("  {} @ {}  ·  {} · {:?}  ·  /exit to quit", cfg.model, cfg.endpoint, if args.has("auto") { "auto" } else { "guided" }, approval)));

@@ -107,6 +107,29 @@ impl Checkpoints {
         self.git(&format!("git diff --cached --no-color -U3 {id} --"), &env).await.stdout
     }
 
+    /// Binary-safe patch of the working tree vs the checkpoint (for applicability checks).
+    pub async fn patch_since(&self, id: &str) -> String {
+        let (_g, env) = self.temp_env();
+        self.git(ADD_ALL, &env).await;
+        self.git(&format!("git diff --cached --binary --no-color {id} --"), &env).await.stdout
+    }
+
+    /// Does `patch` apply cleanly to the checkpoint's tree? Checked against a temporary index; the worktree is untouched.
+    pub async fn patch_applies(&self, base: &str, patch: &str) -> Result<(), String> {
+        if patch.trim().is_empty() {
+            return Ok(());
+        }
+        let (g, env) = self.temp_env();
+        let r = self.git(&format!("git read-tree {base}"), &env).await;
+        if r.code != Some(0) {
+            return Err(format!("cannot read base tree: {}", r.stderr.trim()));
+        }
+        let file = g.0.join("task.patch");
+        std::fs::write(&file, patch).map_err(|e| e.to_string())?;
+        let r = self.git(&format!("git apply --check --cached {:?}", file.to_string_lossy()), &env).await;
+        if r.code == Some(0) { Ok(()) } else { Err(r.stderr.trim().to_string()) }
+    }
+
     /// Restore the working tree to the checkpoint: revert modifications, restore deletions, remove additions.
     pub async fn restore(&self, id: &str) -> Vec<String> {
         let ch = self.changed_since(id).await;
