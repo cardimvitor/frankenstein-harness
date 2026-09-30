@@ -1,7 +1,8 @@
 use crate::util::proc::{run, scrubbed_env, RunOpts};
 use std::path::{Path, PathBuf};
 
-const ADD_ALL: &str = "git add -A -- . ':(exclude).fh'";
+/// Snapshots and diffs ignore the harness's own state and generated artifacts (test runs create these; they are not task output).
+const ADD_ALL: &str = "git add -A -- . ':(exclude).fh' ':(exclude,glob)**/__pycache__/**' ':(exclude,glob)**/*.pyc' ':(exclude,glob)**/.pytest_cache/**' ':(exclude,glob)**/.mypy_cache/**' ':(exclude,glob)**/node_modules/**'";
 
 #[derive(Default, Debug, Clone)]
 pub struct Changes {

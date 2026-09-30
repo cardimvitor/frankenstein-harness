@@ -10,3 +10,7 @@ pub mod fingerprint;
 pub mod session;
 pub mod verify;
 pub mod skills;
+pub mod funnel;
+pub mod orchestrator;
+pub mod engine;
+pub mod eval;

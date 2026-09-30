@@ -205,7 +205,7 @@ pub fn install_smart(mock: &Mock) {
         }
         let props = &req["response_format"]["json_schema"]["schema"]["properties"];
         if props.get("trivial").is_some() {
-            return Scripted::json(json!({"trivial": true, "questions": [], "enriched": "Fix sumRange to be inclusive", "acceptance": ["tests pass"], "plan": [{"step": "fix loop bound", "files": ["lib/math.js"]}], "assumptions": [], "subtasks": []}));
+            return Scripted::json(json!({"trivial": true, "questions": [], "enriched": "Fix sum_range to be inclusive", "acceptance": ["tests pass"], "plan": [{"step": "fix loop bound", "files": ["mathx.py"]}], "assumptions": [], "subtasks": []}));
         }
         if props.get("verdict").is_some() {
             return Scripted::json(json!({"verdict": "pass", "findings": []}));
@@ -220,8 +220,8 @@ pub fn install_smart(mock: &Mock) {
         if last["role"] == "tool" {
             return Scripted::text("Fixed the loop bound.");
         }
-        if text.contains("sumRange") && last["role"] == "user" {
-            return Scripted::call("edit", json!({"path": "lib/math.js", "old_text": "i < b; i++", "new_text": "i <= b; i++"}));
+        if text.contains("sum_range") && last["role"] == "user" {
+            return Scripted::call("edit", json!({"path": "mathx.py", "old_text": "in range(a, b)", "new_text": "in range(a, b + 1)"}));
         }
         if text.contains("Read the file") {
             return Scripted::call("read_file", json!({"path": "src/app.ts"}));

@@ -167,10 +167,14 @@ pub fn detect_verify(cwd: &Path, files: &[String], pkg: &Option<Value>) -> Vec<V
             out.push(VerifyCmd { name: "dotnet test".into(), cmd: format!("dotnet test {sln:?} --nologo -v q"), kind: VerifyKind::Test });
         }
     }
-    let pytest_marker = files.iter().any(|f| f == "pyproject.toml" || f == "pytest.ini" || f == "setup.py");
+    let pytest_marker = files.iter().any(|f| matches!(f.as_str(), "pyproject.toml" | "pytest.ini" | "setup.py" | "tox.ini" | "conftest.py"));
     let py_tests = Regex::new(r"(^|/)(test_.*|.*_test)\.py$").unwrap();
-    if pytest_marker && files.iter().any(|f| py_tests.is_match(f)) {
-        out.push(VerifyCmd { name: "pytest".into(), cmd: "python3 -m pytest -q".into(), kind: VerifyKind::Test });
+    if files.iter().any(|f| py_tests.is_match(f)) {
+        if pytest_marker {
+            out.push(VerifyCmd { name: "pytest".into(), cmd: "python3 -m pytest -q".into(), kind: VerifyKind::Test });
+        } else {
+            out.push(VerifyCmd { name: "unittest".into(), cmd: "python3 -m unittest discover -q".into(), kind: VerifyKind::Test });
+        }
     }
     if files.iter().any(|f| f == "go.mod") {
         out.push(VerifyCmd { name: "go build".into(), cmd: "go build ./...".into(), kind: VerifyKind::Build });
