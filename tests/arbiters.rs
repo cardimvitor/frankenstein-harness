@@ -188,3 +188,28 @@ mod real_tsserver {
         assert!(!r.detail.contains("a.ts:1:"), "{}", r.detail);
     }
 }
+
+mod real_rust_analyzer {
+    use super::*;
+    use fh::verify::lsp::{diagnostics_check, load_specs};
+
+    #[tokio::test]
+    async fn rust_analyzer_flags_only_new_errors() {
+        if !Command::new("rust-analyzer").arg("--version").output().map(|o| o.status.success()).unwrap_or(false) || !have("cargo") {
+            eprintln!("skipped: rust-analyzer not installed");
+            return;
+        }
+        let d = repo(&[("Cargo.toml", "[package]\nname=\"t\"\nversion=\"0.1.0\"\nedition=\"2021\"\n"), ("src/lib.rs", "pub fn old() -> i32 { \"pre-existing\" }\npub fn ok(x: i32) -> i32 { x }\n")]);
+        let cp = Checkpoints::new(d.path());
+        let base = cp.create("base").await.unwrap();
+        let specs = load_specs(d.path(), &Default::default());
+        assert!(specs.iter().any(|s| s.name == "rust"));
+        std::fs::write(d.path().join("src/lib.rs"), "// note\npub fn old() -> i32 { \"pre-existing\" }\npub fn ok(x: i32) -> i32 { x }\n").unwrap();
+        let r = diagnostics_check(d.path(), &cp, &base, &["src/lib.rs".into()], &specs).await.unwrap();
+        assert_eq!(r.status, Status::Pass, "{}", r.detail);
+        std::fs::write(d.path().join("src/lib.rs"), "pub fn old() -> i32 { \"pre-existing\" }\npub fn ok(x: i32) -> i32 { x }\npub fn bad() -> String { ok(\"nope\") }\n").unwrap();
+        let r = diagnostics_check(d.path(), &cp, &base, &["src/lib.rs".into()], &specs).await.unwrap();
+        assert_eq!(r.status, Status::Fail, "{}", r.detail);
+        assert!(r.detail.contains("src/lib.rs:3"), "{}", r.detail);
+    }
+}

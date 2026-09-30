@@ -348,3 +348,25 @@ fn spring_django_and_vue_are_detected_with_versions_and_packs_apply_accordingly(
     }
     assert!(load_builtins().len() >= 18);
 }
+
+#[test]
+fn dotnet_framework_solutions_are_built_with_msbuild_not_dotnet_build() {
+    use fh::fingerprint::{framework_cmds, has_old_style_project};
+    let old = r#"<?xml version="1.0" encoding="utf-8"?><Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003"><PropertyGroup><TargetFrameworkVersion>v4.8</TargetFrameworkVersion></PropertyGroup></Project>"#;
+    let sdk = r#"<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net48</TargetFramework></PropertyGroup></Project>"#;
+    let (_d, fp) = fp_dir(&[("App.sln", ""), ("App/App.csproj", old), ("App.Tests/App.Tests.csproj", old)]);
+    assert!(fp.stacks.iter().any(|s| s.id == "dotnet-framework" && s.version.as_deref() == Some("48")));
+    assert!(fp.verify.iter().any(|v| v.name == "msbuild") && !fp.verify.iter().any(|v| v.cmd.starts_with("dotnet ")), "{:?}", fp.verify);
+    // SDK-style projects that target net48 still build with the dotnet CLI
+    let (_d, fp) = fp_dir(&[("App.sln", ""), ("App/App.csproj", sdk)]);
+    assert!(fp.verify.iter().any(|v| v.cmd.starts_with("dotnet build")));
+    let d = tempfile::tempdir().unwrap();
+    std::fs::write(d.path().join("a.csproj"), old).unwrap();
+    assert!(has_old_style_project(&["a.csproj".to_string()], d.path()));
+    // the Windows commands locate MSBuild and vstest through vswhere and fail loudly when they are missing
+    let w = framework_cmds("App.sln", true, true);
+    assert_eq!(w.len(), 2);
+    assert!(w[0].cmd.contains("vswhere.exe") && w[0].cmd.contains("MSBuild.exe") && w[0].cmd.contains("/restore") && w[0].cmd.contains("exit $LASTEXITCODE"));
+    assert!(w[1].cmd.contains("vstest.console.exe") && w[1].cmd.contains("*Tests.dll") && w[1].cmd.contains("Write-Error"));
+    assert_eq!(framework_cmds("App.sln", false, true).len(), 1);
+}

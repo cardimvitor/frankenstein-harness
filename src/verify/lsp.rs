@@ -45,19 +45,24 @@ pub fn load_specs(cwd: &Path, env: &Env) -> Vec<LspSpec> {
         let p = cwd.join("node_modules/.bin").join(n);
         p.exists().then(|| p.to_string_lossy().to_string())
     };
-    if cwd.join("tsconfig.json").exists() {
+    let has_ts_config = cwd.join("tsconfig.json").exists() || cwd.join("jsconfig.json").exists();
+    if has_ts_config || cwd.join("package.json").exists() {
         let ts_major: Option<u32> = std::fs::read_to_string(cwd.join("node_modules/typescript/package.json")).ok().and_then(|s| serde_json::from_str::<Value>(&s).ok()).and_then(|v| v["version"].as_str().and_then(|v| v.split('.').next().and_then(|m| m.parse().ok())));
         let ids = [("ts", "typescript"), ("tsx", "typescriptreact"), ("js", "javascript"), ("jsx", "javascriptreact")];
         let exts = ["ts", "tsx", "js", "jsx"];
         match (ts_major, local_bin("tsc")) {
             // TypeScript 7+ ships a native language server (`tsc --lsp`); typescript-language-server needs the JS tsserver it no longer has
-            (Some(m), Some(tsc)) if m >= 7 => out.push(spec("typescript", &tsc, &["--lsp", "-stdio"], &exts, &ids)),
+            (Some(m), Some(tsc)) if m >= 7 && has_ts_config => out.push(spec("typescript", &tsc, &["--lsp", "-stdio"], &exts, &ids)),
             _ => {
                 if let Some(c) = local_bin("typescript-language-server").or_else(|| on_path("typescript-language-server").then(|| "typescript-language-server".to_string())) {
                     out.push(spec("typescript", &c, &["--stdio"], &exts, &ids));
                 }
             }
         }
+    }
+    // a rustup shim exists even when the component is not installed: require that it actually runs
+    if cwd.join("Cargo.toml").exists() && on_path("rust-analyzer") && std::process::Command::new("rust-analyzer").arg("--version").stdout(Stdio::null()).stderr(Stdio::null()).status().map(|s| s.success()).unwrap_or(false) {
+        out.push(spec("rust", "rust-analyzer", &[], &["rs"], &[("rs", "rust")]));
     }
     if has_file_ext(cwd, ".py") && on_path("pyright-langserver") {
         out.push(spec("python", "pyright-langserver", &["--stdio"], &["py"], &[("py", "python")]));
@@ -95,6 +100,10 @@ struct Client {
     _child: Child,
     next: u64,
     pull: bool,
+    /// work-done progress tokens that have begun and not ended (workspace loading, indexing)
+    active: std::collections::HashSet<String>,
+    /// rust-analyzer style serverStatus: Some(false) while the server is still loading
+    quiescent: Option<bool>,
 }
 
 fn uri(p: &Path) -> String {
@@ -122,7 +131,12 @@ impl Client {
                 loop {
                     let mut line = String::new();
                     match out.read_line(&mut line).await {
-                        Ok(0) | Err(_) => return,
+                        Ok(0) | Err(_) => {
+                            if std::env::var_os("FH_LSP_DEBUG").is_some() {
+                                eprintln!("[lsp] server closed its output");
+                            }
+                            return;
+                        }
                         Ok(_) => {}
                     }
                     let l = line.trim();
@@ -144,21 +158,46 @@ impl Client {
                 }
             }
         });
-        let mut cl = Client { stdin, rx, _child: child, next: 1, pull: false };
+        let mut cl = Client { stdin, rx, _child: child, next: 1, pull: false, active: Default::default(), quiescent: None };
         let id = cl.next;
         cl.next += 1;
         let root_uri = uri(root);
         send(&mut cl.stdin, &json!({"jsonrpc": "2.0", "id": id, "method": "initialize", "params": {
             "processId": std::process::id(), "rootUri": root_uri, "workspaceFolders": [{"uri": root_uri, "name": "root"}],
-            "capabilities": {"textDocument": {"publishDiagnostics": {}, "synchronization": {}}, "workspace": {"configuration": true, "workspaceFolders": true}}}}))
+            "capabilities": {"textDocument": {"publishDiagnostics": {}, "synchronization": {}}, "window": {"workDoneProgress": true}, "workspace": {"configuration": true, "workspaceFolders": true}, "experimental": {"serverStatus": true}}}}))
         .await
         .map_err(|e| e.to_string())?;
         let init = cl.wait_response(id, Duration::from_millis(s.timeout_ms)).await.ok_or_else(|| format!("{} did not answer initialize", s.name))?;
+        cl.quiescent = if init.pointer("/result/capabilities/experimental/serverStatus").map(|v| v.as_bool().unwrap_or(true) && !v.is_null()).unwrap_or(false) { Some(false) } else { None };
         cl.pull = init.pointer("/result/capabilities/diagnosticProvider").map(|d| !d.is_null()).unwrap_or(false);
         send(&mut cl.stdin, &json!({"jsonrpc": "2.0", "method": "initialized", "params": {}})).await.map_err(|e| e.to_string())?;
         // some servers (pyright) only start analysing after the first configuration exchange
         send(&mut cl.stdin, &json!({"jsonrpc": "2.0", "method": "workspace/didChangeConfiguration", "params": {"settings": {}}})).await.map_err(|e| e.to_string())?;
         Ok(cl)
+    }
+
+    /// Tracks loading state from progress and status notifications.
+    fn note(&mut self, m: &Value) {
+        match m["method"].as_str() {
+            Some("$/progress") => {
+                let tok = m["params"]["token"].to_string();
+                match m["params"]["value"]["kind"].as_str() {
+                    Some("begin") => {
+                        self.active.insert(tok);
+                    }
+                    Some("end") => {
+                        self.active.remove(&tok);
+                    }
+                    _ => {}
+                }
+            }
+            Some("experimental/serverStatus") => {
+                if let Some(q) = m["params"]["quiescent"].as_bool() {
+                    self.quiescent = Some(q);
+                }
+            }
+            _ => {}
+        }
     }
 
     /// Answers server-initiated requests so the server never blocks on us.
@@ -174,6 +213,7 @@ impl Client {
         loop {
             let m = tokio::time::timeout_at(deadline, self.rx.recv()).await.ok()??;
             if m.get("method").is_some() {
+                self.note(&m);
                 self.auto_reply(&m).await;
                 continue;
             }
@@ -184,8 +224,11 @@ impl Client {
     }
 
     /// Diagnostics for `file_uri`: pull if supported, else the latest push after a quiet period.
-    async fn diagnostics(&mut self, file_uri: &str, timeout: Duration) -> Vec<Value> {
+    async fn diagnostics(&mut self, file_uri: &str, version: u32, timeout: Duration) -> Vec<Value> {
         if self.pull {
+            let _ = version;
+            // a server that is still loading the workspace answers a pull with nothing: wait until it is quiet first
+            self.wait_idle(timeout).await;
             let id = self.next;
             self.next += 1;
             let _ = send(&mut self.stdin, &json!({"jsonrpc": "2.0", "id": id, "method": "textDocument/diagnostic", "params": {"textDocument": {"uri": file_uri}}})).await;
@@ -197,10 +240,18 @@ impl Client {
         let deadline = tokio::time::Instant::now() + timeout;
         let mut latest: Option<Vec<Value>> = None;
         loop {
-            let wait = if latest.is_some() { Duration::from_millis(600) } else { deadline.saturating_duration_since(tokio::time::Instant::now()) };
+            // settled = we have diagnostics and the server reports nothing still loading; then a short quiet period ends the wait
+            let settled = latest.is_some() && self.active.is_empty() && self.quiescent != Some(false);
+            let wait = if settled { Duration::from_millis(600) } else { deadline.saturating_duration_since(tokio::time::Instant::now()) };
             let Ok(Some(m)) = tokio::time::timeout(wait, self.rx.recv()).await else { break };
+            if std::env::var_os("FH_LSP_DEBUG").is_some() {
+                eprintln!("[lsp msg] {} {} active={} settled={}", m["method"].as_str().unwrap_or("<response>"), if m["method"] == "textDocument/publishDiagnostics" { format!("{} v{} n={}", m["params"]["uri"], m["params"]["version"], m["params"]["diagnostics"].as_array().map(|a| a.len()).unwrap_or(0)) } else { String::new() }, self.active.len(), settled);
+            }
             if m.get("method").is_some() {
-                if m["method"] == "textDocument/publishDiagnostics" && m["params"]["uri"] == file_uri {
+                self.note(&m);
+                // a publish tagged with an older document version is a stale answer for the text we replaced
+                let stale = m["params"]["version"].as_u64().map(|v| v != version as u64).unwrap_or(false);
+                if m["method"] == "textDocument/publishDiagnostics" && m["params"]["uri"] == file_uri && !stale {
                     latest = Some(m["params"]["diagnostics"].as_array().cloned().unwrap_or_default());
                 } else {
                     self.auto_reply(&m).await;
@@ -211,6 +262,37 @@ impl Client {
             }
         }
         latest.unwrap_or_default()
+    }
+
+    /// Returns once no work-done progress is active and the server has been quiet for a moment (or the timeout passes).
+    async fn wait_idle(&mut self, timeout: Duration) {
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            let idle = self.active.is_empty() && self.quiescent != Some(false);
+            let wait = if idle { Duration::from_millis(700) } else { deadline.saturating_duration_since(tokio::time::Instant::now()) };
+            match tokio::time::timeout(wait, self.rx.recv()).await {
+                Ok(Some(m)) => {
+                    if m.get("method").is_some() {
+                        self.note(&m);
+                        self.auto_reply(&m).await;
+                    }
+                }
+                _ => return,
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return;
+            }
+        }
+    }
+
+    /// Consume everything already queued so old publishes cannot be mistaken for answers to the next edit.
+    async fn drain(&mut self) {
+        while let Ok(m) = self.rx.try_recv() {
+            if m.get("method").is_some() {
+                self.note(&m);
+                self.auto_reply(&m).await;
+            }
+        }
     }
 
     async fn open(&mut self, file_uri: &str, lang: &str, version: u32, text: &str) {
@@ -284,17 +366,24 @@ pub async fn diagnostics_check(cwd: &Path, cp: &Checkpoints, base: &str, changed
             let base_text = cp.file_at(base, f).await;
             let base_diags = match &base_text {
                 Some(bt) => {
+                    cl.drain().await;
                     cl.open(&file_uri, &lang, 1, bt).await;
-                    let d = cl.diagnostics(&file_uri, timeout).await;
+                    let d = cl.diagnostics(&file_uri, 1, timeout).await;
+                    cl.drain().await;
                     cl.change(&file_uri, 2, &cur_text).await;
                     d
                 }
                 None => {
+                    cl.drain().await;
                     cl.open(&file_uri, &lang, 1, &cur_text).await;
                     vec![]
                 }
             };
-            let cur = cl.diagnostics(&file_uri, timeout).await;
+            let cur_version = if base_text.is_some() { 2 } else { 1 };
+            let cur = cl.diagnostics(&file_uri, cur_version, timeout).await;
+            if std::env::var_os("FH_LSP_DEBUG").is_some() {
+                eprintln!("[lsp {}] {f}: base {} diagnostic(s), now {}", s.name, base_diags.len(), cur.len());
+            }
             for d in new_errors(&base_diags, &cur) {
                 let line = d.pointer("/range/start/line").and_then(|l| l.as_u64()).unwrap_or(0) + 1;
                 problems.push(format!("{f}:{line}: {} ({})", d["message"].as_str().unwrap_or("").lines().next().unwrap_or(""), s.name));

@@ -153,6 +153,37 @@ pub fn detect_node(pkg: &Option<Value>, files: &[String]) -> Vec<StackTag> {
     tags
 }
 
+/// True when a project file is the classic (non SDK-style) format used by .NET Framework 4.x solutions.
+pub fn has_old_style_project(files: &[String], cwd: &Path) -> bool {
+    files.iter().filter(|f| f.ends_with(".csproj") || f.ends_with(".vbproj")).take(50).any(|f| {
+        let x = read(&cwd.join(f));
+        !x.contains("Sdk=") && !x.contains("<Sdk ") && x.contains("<Project")
+    })
+}
+
+/// Build and test commands for classic .NET Framework solutions. On Windows MSBuild and vstest.console are located
+/// with vswhere (Visual Studio or Build Tools); elsewhere `msbuild` (Mono) is used when installed.
+pub fn framework_cmds(sln: &str, has_tests: bool, windows: bool) -> Vec<VerifyCmd> {
+    if windows {
+        let vswhere = r#"& "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * "#;
+        let mut v = vec![VerifyCmd {
+            name: "msbuild".into(),
+            cmd: format!(r#"$ms = {vswhere}-requires Microsoft.Component.MSBuild -find 'MSBuild\**\Bin\MSBuild.exe' | Select-Object -First 1; if (-not $ms) {{ Write-Error 'MSBuild not found: install Visual Studio Build Tools'; exit 1 }}; & $ms "{sln}" /restore /nologo /v:q /m; exit $LASTEXITCODE"#),
+            kind: VerifyKind::Build,
+        }];
+        if has_tests {
+            v.push(VerifyCmd {
+                name: "vstest".into(),
+                cmd: format!(r#"$vt = {vswhere}-find 'Common7\IDE\CommonExtensions\Microsoft\TestWindow\vstest.console.exe' | Select-Object -First 1; if (-not $vt) {{ Write-Error 'vstest.console.exe not found'; exit 1 }}; $dlls = Get-ChildItem -Recurse -Include *Tests.dll,*Test.dll | Where-Object {{ $_.FullName -match '\\bin\\' -and $_.FullName -notmatch '\\obj\\' }} | ForEach-Object FullName; if (-not $dlls) {{ Write-Error 'no test assemblies built'; exit 1 }}; & $vt $dlls /Logger:console; exit $LASTEXITCODE"#),
+                kind: VerifyKind::Test,
+            });
+        }
+        v
+    } else {
+        vec![VerifyCmd { name: "msbuild".into(), cmd: format!("msbuild {sln:?} /restore /nologo /v:q"), kind: VerifyKind::Build }]
+    }
+}
+
 pub fn detect_verify(cwd: &Path, files: &[String], pkg: &Option<Value>) -> Vec<VerifyCmd> {
     if let Some(Value::Array(a)) = read_json(&cwd.join(".fh").join("verify.json")) {
         let parsed: Vec<VerifyCmd> = a
@@ -194,10 +225,15 @@ pub fn detect_verify(cwd: &Path, files: &[String], pkg: &Option<Value>) -> Vec<V
     }
     let sln = files.iter().find(|f| f.ends_with(".sln")).or_else(|| files.iter().find(|f| f.ends_with(".csproj")));
     if let Some(sln) = sln {
+        if has_old_style_project(files, cwd) {
+            // classic .NET Framework projects (no SDK attribute) are built by MSBuild, not by `dotnet build`
+            out.extend(framework_cmds(sln, files.iter().any(|f| Regex::new(r"Tests?\.csproj$|\.Tests?/").unwrap().is_match(f)), cfg!(windows)));
+        } else {
         out.push(VerifyCmd { name: "dotnet build".into(), cmd: format!("dotnet build {sln:?} --nologo -v q"), kind: VerifyKind::Build });
         let tests = Regex::new(r"Tests?\.csproj$|\.Tests?/").unwrap();
         if files.iter().any(|f| tests.is_match(f)) {
             out.push(VerifyCmd { name: "dotnet test".into(), cmd: format!("dotnet test {sln:?} --nologo -v q"), kind: VerifyKind::Test });
+        }
         }
     }
     let root_has = |n: &str| files.iter().any(|f| f == n);
