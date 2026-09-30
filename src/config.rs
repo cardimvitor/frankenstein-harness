@@ -66,6 +66,8 @@ pub struct Config {
     pub verify_rounds_auto: usize,
     /// total prompt+completion tokens one task may use across all rounds and workers (0 = unlimited)
     pub max_task_tokens: u64,
+    /// use language servers as a verifier input (kept warm between rounds)
+    pub lsp_diagnostics: bool,
     /// optional embedding model for skill recall (empty = BM25 only); served at `embeddingEndpoint` or the main endpoint
     pub embedding_model: String,
     pub embedding_endpoint: String,
@@ -107,6 +109,7 @@ impl Default for Config {
             verify_rounds_normal: 2,
             verify_rounds_auto: 5,
             max_task_tokens: 800_000,
+            lsp_diagnostics: true,
             embedding_model: String::new(),
             embedding_endpoint: String::new(),
             llm_compaction: true,

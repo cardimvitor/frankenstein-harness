@@ -7,6 +7,7 @@ use crate::config::{config_dir, Env};
 use crate::session::checkpoint::Checkpoints;
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
@@ -303,6 +304,15 @@ impl Client {
         let _ = send(&mut self.stdin, &json!({"jsonrpc": "2.0", "method": "textDocument/didChange", "params": {"textDocument": {"uri": file_uri, "version": version}, "contentChanges": [{"text": text}]}})).await;
     }
 
+    /// The server process has exited (or its output stream closed).
+    fn is_dead(&mut self) -> bool {
+        matches!(self._child.try_wait(), Ok(Some(_)) | Err(_)) || self.rx.is_closed()
+    }
+
+    async fn close(&mut self, file_uri: &str) {
+        let _ = send(&mut self.stdin, &json!({"jsonrpc": "2.0", "method": "textDocument/didClose", "params": {"textDocument": {"uri": file_uri}}})).await;
+    }
+
     async fn shutdown(mut self) {
         let id = self.next;
         let _ = send(&mut self.stdin, &json!({"jsonrpc": "2.0", "id": id, "method": "shutdown"})).await;
@@ -337,8 +347,57 @@ fn new_errors(base: &[Value], cur: &[Value]) -> Vec<Value> {
     out
 }
 
-/// None when no language server applies to the changed files.
+/// Language servers kept alive between verification rounds and tasks: the multi-second startup (workspace load,
+/// indexing) is paid once, and `warm` lets it overlap with the model's planning and coding time.
+#[derive(Default)]
+pub struct LspPool {
+    slots: std::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<Option<Client>>>>>,
+}
+
+impl LspPool {
+    pub fn new() -> Arc<LspPool> {
+        Arc::new(LspPool::default())
+    }
+
+    fn slot(&self, name: &str) -> Arc<tokio::sync::Mutex<Option<Client>>> {
+        self.slots.lock().unwrap().entry(name.to_string()).or_default().clone()
+    }
+
+    /// Starts the servers in the background (idempotent). Errors surface later, when a check needs the server.
+    pub fn warm(self: &Arc<Self>, specs: &[LspSpec], cwd: &Path) {
+        let root = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
+        for s in specs {
+            let slot = self.slot(&s.name);
+            let (s, root) = (s.clone(), root.clone());
+            tokio::spawn(async move {
+                let mut g = slot.lock().await;
+                if g.is_none() {
+                    *g = Client::start(&s, &root).await.ok();
+                }
+            });
+        }
+    }
+
+    /// Stops every server (they are also killed when the pool is dropped).
+    pub async fn shutdown(&self) {
+        let slots: Vec<_> = self.slots.lock().unwrap().drain().map(|(_, v)| v).collect();
+        for sl in slots {
+            if let Some(c) = sl.lock().await.take() {
+                c.shutdown().await;
+            }
+        }
+    }
+}
+
+/// None when no language server applies to the changed files. Starts and stops its own servers.
 pub async fn diagnostics_check(cwd: &Path, cp: &Checkpoints, base: &str, changed: &[String], specs: &[LspSpec]) -> Option<CheckResult> {
+    let pool = LspPool::new();
+    let r = diagnostics_check_pooled(&pool, cwd, cp, base, changed, specs).await;
+    pool.shutdown().await;
+    r
+}
+
+pub async fn diagnostics_check_pooled(pool: &Arc<LspPool>, cwd: &Path, cp: &Checkpoints, base: &str, changed: &[String], specs: &[LspSpec]) -> Option<CheckResult> {
     let t0 = std::time::Instant::now();
     let mut problems: Vec<String> = Vec::new();
     let mut ran: Vec<String> = Vec::new();
@@ -349,13 +408,20 @@ pub async fn diagnostics_check(cwd: &Path, cp: &Checkpoints, base: &str, changed
             continue;
         }
         let root = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
-        let mut cl = match Client::start(s, &root).await {
-            Ok(c) => c,
-            Err(e) => {
-                skipped.push(e);
-                continue;
+        let slot = pool.slot(&s.name);
+        let mut guard = slot.lock().await;
+        // (re)start when the server was never started, failed to start, or has died
+        if guard.as_mut().map(|c| c.is_dead()).unwrap_or(true) {
+            match Client::start(s, &root).await {
+                Ok(c) => *guard = Some(c),
+                Err(e) => {
+                    *guard = None;
+                    skipped.push(e);
+                    continue;
+                }
             }
-        };
+        }
+        let cl = guard.as_mut().unwrap();
         ran.push(s.name.clone());
         let timeout = Duration::from_millis(s.timeout_ms);
         for f in files {
@@ -381,6 +447,7 @@ pub async fn diagnostics_check(cwd: &Path, cp: &Checkpoints, base: &str, changed
             };
             let cur_version = if base_text.is_some() { 2 } else { 1 };
             let cur = cl.diagnostics(&file_uri, cur_version, timeout).await;
+            cl.close(&file_uri).await;
             if std::env::var_os("FH_LSP_DEBUG").is_some() {
                 eprintln!("[lsp {}] {f}: base {} diagnostic(s), now {}", s.name, base_diags.len(), cur.len());
             }
@@ -389,7 +456,6 @@ pub async fn diagnostics_check(cwd: &Path, cp: &Checkpoints, base: &str, changed
                 problems.push(format!("{f}:{line}: {} ({})", d["message"].as_str().unwrap_or("").lines().next().unwrap_or(""), s.name));
             }
         }
-        cl.shutdown().await;
     }
     if ran.is_empty() {
         return if skipped.is_empty() { None } else { Some(CheckResult { name: "diagnostics".into(), kind: CheckKind::Types, status: Status::Skipped, detail: skipped.join("; "), ms: t0.elapsed().as_millis() as u64 }) };

@@ -4,6 +4,7 @@ use crate::fingerprint::{Fingerprint, VerifyKind};
 use crate::llm::client::LlmClient;
 use crate::session::checkpoint::Checkpoints;
 use std::future::Future;
+use std::sync::Arc;
 use std::path::Path;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
@@ -62,6 +63,14 @@ pub struct VerifyCtx<'a> {
     pub allowed_globs: Option<Vec<String>>,
     pub max_rounds: usize,
     pub cancel: Option<CancellationToken>,
+    /// warm language servers shared across rounds and tasks (None: start and stop them per round)
+    pub lsp: Option<LspHandle>,
+}
+
+#[derive(Clone)]
+pub struct LspHandle {
+    pub pool: Arc<super::lsp::LspPool>,
+    pub specs: Arc<Vec<super::lsp::LspSpec>>,
 }
 
 #[derive(Default)]
@@ -91,36 +100,53 @@ pub fn feedback_from(r: &RoundReport) -> String {
 /// One verification round: parallel deterministic checks and an LLM review; deterministic results decide.
 pub async fn run_round(ctx: &VerifyCtx<'_>, st: &mut VerifyState, round: usize) -> RoundReport {
     let has_runnable = ctx.fp.verify.iter().any(|c| matches!(c.kind, VerifyKind::Test | VerifyKind::Build | VerifyKind::Types));
-    let (cmd_res, dc) = tokio::join!(
-        run_commands(ctx.cwd, &ctx.fp.verify, ctx.cancel.clone(), Duration::from_secs(600)),
-        diff_checks(ctx.cp, ctx.base, ctx.allowed_globs.as_deref())
-    );
-    let mut checks: Vec<CheckResult> = cmd_res.into_iter().chain(dc.results).collect();
-    let touched: Vec<String> = dc.changed.iter().filter(|f| !dc.deleted.contains(f)).cloned().collect();
-    let lsp_specs = super::lsp::load_specs(ctx.cwd, &crate::config::process_env());
-    if !lsp_specs.is_empty() {
-        if let Some(d) = super::lsp::diagnostics_check(ctx.cwd, ctx.cp, ctx.base, &touched, &lsp_specs).await {
-            checks.push(d);
-        }
-    }
-    if let Some(f) = super::format::format_check(ctx.cwd, ctx.cp, ctx.base, &touched).await {
-        checks.push(f);
-    }
-    let (mut findings, mut dropped, mut ran) = (Vec::new(), 0, false);
-    if let Some(llm) = ctx.llm {
-        if !dc.diff.trim().is_empty() && !dc.changed.is_empty() {
-            let checklist = CHECKLISTS[(round - 1).min(CHECKLISTS.len() - 1)];
-            // a reviewer failure never blocks: deterministic checks decide
-            if let Ok(r) = review(llm, ctx.cwd, &dc.diff, &dc.changed, ctx.acceptance, checklist, ctx.cancel.clone()).await {
-                st.stats.raised += r.valid.len() + r.dropped;
-                st.stats.valid += r.valid.len();
-                st.stats.dropped += r.dropped;
-                findings = r.valid;
-                dropped = r.dropped;
-                ran = !r.malformed;
+    // Everything that can overlap does: build/test commands run while the diff is inspected, and once the diff is known
+    // the formatter, the language servers and the LLM reviewer run alongside the commands.
+    let cmds = run_commands(ctx.cwd, &ctx.fp.verify, ctx.cancel.clone(), Duration::from_secs(600));
+    let rest = async {
+        let dc = diff_checks(ctx.cp, ctx.base, ctx.allowed_globs.as_deref()).await;
+        let touched: Vec<String> = dc.changed.iter().filter(|f| !dc.deleted.contains(f)).cloned().collect();
+        let fmt = super::format::format_check(ctx.cwd, ctx.cp, ctx.base, &touched);
+        let lsp = async {
+            let (pool, specs, owned) = match &ctx.lsp {
+                Some(h) => (h.pool.clone(), h.specs.clone(), false),
+                None => (super::lsp::LspPool::new(), Arc::new(super::lsp::load_specs(ctx.cwd, &crate::config::process_env())), true),
+            };
+            if specs.is_empty() {
+                return None;
             }
-        }
-    }
+            let r = super::lsp::diagnostics_check_pooled(&pool, ctx.cwd, ctx.cp, ctx.base, &touched, &specs).await;
+            if owned {
+                pool.shutdown().await;
+            }
+            r
+        };
+        let review_fut = async {
+            let (mut findings, mut dropped, mut ran, mut stats) = (Vec::new(), 0, false, (0usize, 0usize, 0usize));
+            if let Some(llm) = ctx.llm {
+                if !dc.diff.trim().is_empty() && !dc.changed.is_empty() {
+                    let checklist = CHECKLISTS[(round - 1).min(CHECKLISTS.len() - 1)];
+                    // a reviewer failure never blocks: deterministic checks decide
+                    if let Ok(r) = review(llm, ctx.cwd, &dc.diff, &dc.changed, ctx.acceptance, checklist, ctx.cancel.clone()).await {
+                        stats = (r.valid.len() + r.dropped, r.valid.len(), r.dropped);
+                        findings = r.valid;
+                        dropped = r.dropped;
+                        ran = !r.malformed;
+                    }
+                }
+            }
+            (findings, dropped, ran, stats)
+        };
+        let (fmt, lsp, reviewed) = tokio::join!(fmt, lsp, review_fut);
+        (dc, fmt, lsp, reviewed)
+    };
+    let (cmd_res, (dc, fmt, lsp, (findings, dropped, ran, rstats))) = tokio::join!(cmds, rest);
+    let mut checks: Vec<CheckResult> = cmd_res.into_iter().chain(dc.results).collect();
+    checks.extend(lsp);
+    checks.extend(fmt);
+    st.stats.raised += rstats.0;
+    st.stats.valid += rstats.1;
+    st.stats.dropped += rstats.2;
     st.changed = dc.changed;
     let blocking: Vec<Finding> = findings.iter().filter(|f| is_blocking(f, round, ctx.max_rounds)).cloned().collect();
     st.stats.blockers += blocking.len();

@@ -95,7 +95,7 @@ fn fingerprint_detects_stacks_and_verify_commands() {
     let a = repo(&[("App/App.csproj", "<Project><PropertyGroup><TargetFrameworkVersion>v4.8</TargetFrameworkVersion></PropertyGroup></Project>"), ("App.sln", "")]);
     let ids: Vec<String> = fingerprint(a.path()).stacks.iter().map(|s| format!("{}@{}", s.id, s.version.clone().unwrap_or_default())).collect();
     assert_eq!(ids, vec!["dotnet-framework@48"]);
-    let b = repo(&[("x/x.csproj", "<Project><PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup></Project>"), ("package.json", r#"{"dependencies":{"react":"^18.2.0"},"scripts":{"test":"vitest","build":"vite build"}}"#)]);
+    let b = repo(&[("x/x.csproj", "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup></Project>"), ("package.json", r#"{"dependencies":{"react":"^18.2.0"},"scripts":{"test":"vitest","build":"vite build"}}"#)]);
     let fb = fingerprint(b.path());
     assert!(fb.stacks.iter().any(|s| s.id == "dotnet" && s.version.as_deref() == Some("8")));
     assert!(fb.stacks.iter().any(|s| s.id == "react" && s.version.as_deref() == Some("18")));
@@ -117,7 +117,7 @@ async fn verify_loop_fail_fix_pass_and_unverified() {
     let fp = fingerprint(d.path());
     let fixes = Arc::new(Mutex::new(0));
     let (f2, dp) = (fixes.clone(), d.path().to_path_buf());
-    let ctx = VerifyCtx { cwd: d.path(), cp: &cp, base: &base, fp: &fp, llm: None, acceptance: &[], allowed_globs: None, max_rounds: 3, cancel: None };
+    let ctx = VerifyCtx { cwd: d.path(), cp: &cp, base: &base, fp: &fp, llm: None, acceptance: &[], allowed_globs: None, max_rounds: 3, cancel: None, lsp: None };
     let rep = verify_loop(&ctx, move |fb, _| {
         *f2.lock().unwrap() += 1;
         assert!(fb.contains("CHECK FAILED: test"));
@@ -134,7 +134,7 @@ async fn verify_loop_fail_fix_pass_and_unverified() {
     let b2 = cp2.create("t").await.unwrap();
     std::fs::write(d2.path().join("a.txt"), "y").unwrap();
     let fp2 = fingerprint(d2.path());
-    let ctx2 = VerifyCtx { cwd: d2.path(), cp: &cp2, base: &b2, fp: &fp2, llm: None, acceptance: &[], allowed_globs: None, max_rounds: 1, cancel: None };
+    let ctx2 = VerifyCtx { cwd: d2.path(), cp: &cp2, base: &b2, fp: &fp2, llm: None, acceptance: &[], allowed_globs: None, max_rounds: 1, cancel: None, lsp: None };
     assert_eq!(verify_loop(&ctx2, |_, _| async {}).await.verdict, Verdict::Unverified);
 }
 
@@ -151,7 +151,7 @@ async fn reviewer_blocker_with_valid_citation_forces_a_fix_round() {
     m.push(Scripted::json(json!({"verdict":"pass","findings":[]})));
     let llm = LlmClient::new(cfg(&m.url), Env::new());
     let fp = fingerprint(d.path());
-    let ctx = VerifyCtx { cwd: d.path(), cp: &cp, base: &base, fp: &fp, llm: Some(&llm), acceptance: &["no crashes".to_string()], allowed_globs: None, max_rounds: 3, cancel: None };
+    let ctx = VerifyCtx { cwd: d.path(), cp: &cp, base: &base, fp: &fp, llm: Some(&llm), acceptance: &["no crashes".to_string()], allowed_globs: None, max_rounds: 3, cancel: None, lsp: None };
     let fb = Arc::new(Mutex::new(String::new()));
     let (fb2, dp): (_, PathBuf) = (fb.clone(), d.path().to_path_buf());
     let rep = verify_loop(&ctx, move |f, _| {

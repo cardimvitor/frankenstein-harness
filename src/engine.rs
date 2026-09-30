@@ -263,6 +263,7 @@ pub struct Engine {
     pub store: SkillStore,
     pub hooks: Arc<crate::hooks::Hooks>,
     mcp: tokio::sync::OnceCell<Vec<crate::tools::ToolRef>>,
+    lsp: tokio::sync::OnceCell<Option<crate::verify::rounds::LspHandle>>,
     started: std::sync::atomic::AtomicBool,
     session: Mutex<Option<SessionLog>>,
     pending: Mutex<Vec<tokio::task::JoinHandle<()>>>,
@@ -273,7 +274,26 @@ impl Engine {
         let llm = LlmClient::new(cfg.clone(), env.clone());
         let cwd: PathBuf = cwd.into();
         let hooks = Arc::new(crate::hooks::Hooks::load(&cwd, &env));
-        Engine { cfg, env, io, cwd, llm, store, hooks, mcp: tokio::sync::OnceCell::new(), started: std::sync::atomic::AtomicBool::new(false), session: Mutex::new(None), pending: Mutex::new(vec![]) }
+        Engine { cfg, env, io, cwd, llm, store, hooks, mcp: tokio::sync::OnceCell::new(), lsp: tokio::sync::OnceCell::new(), started: std::sync::atomic::AtomicBool::new(false), session: Mutex::new(None), pending: Mutex::new(vec![]) }
+    }
+
+    /// Language servers for this workspace, started once and kept warm (None when disabled or none applies).
+    async fn lsp_handle(&self) -> Option<crate::verify::rounds::LspHandle> {
+        self.lsp
+            .get_or_init(|| async {
+                if !self.cfg.lsp_diagnostics {
+                    return None;
+                }
+                let specs = crate::verify::lsp::load_specs(&self.cwd, &self.env);
+                if specs.is_empty() {
+                    return None;
+                }
+                let pool = crate::verify::lsp::LspPool::new();
+                pool.warm(&specs, &self.cwd);
+                Some(crate::verify::rounds::LspHandle { pool, specs: Arc::new(specs) })
+            })
+            .await
+            .clone()
     }
 
     /// Wait for post-delivery background work (skill learning) so short-lived CLI runs do not drop it.
@@ -360,6 +380,8 @@ impl Engine {
         if let Some(why) = up.blocked {
             finish!(TaskResult::new("aborted", &format!("blocked by hook: {why}")));
         }
+        // start the language servers now so their startup overlaps planning and coding
+        let _ = self.lsp_handle().await;
         let fp: Fingerprint = fingerprint(&self.cwd);
         let known = self.store.is_known_project(&fp.project_id);
         let slog = match &o.resume {
@@ -611,7 +633,7 @@ impl Engine {
         let tv = Instant::now();
         let subtasks = plan.subtasks.clone();
         let allowed = allowed_from_plan(&plan.plan, &subtasks);
-        let ctx = VerifyCtx { cwd: &self.cwd, cp: &cp, base: &base_cp, fp: &fp, llm: Some(&self.llm), acceptance: &plan.acceptance, allowed_globs: allowed, max_rounds, cancel: o.cancel.clone() };
+        let ctx = VerifyCtx { cwd: &self.cwd, cp: &cp, base: &base_cp, fp: &fp, llm: Some(&self.llm), acceptance: &plan.acceptance, allowed_globs: allowed, max_rounds, cancel: o.cancel.clone(), lsp: self.lsp_handle().await };
         let mut vstate = VerifyState::default();
         let mut budget_hit = false;
         for round in 1..=max_rounds {
