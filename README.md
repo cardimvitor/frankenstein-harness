@@ -32,7 +32,16 @@ export FH_API_KEY=<token>          # omit for an open endpoint (or FH_AUTH_SCHEM
 ./target/release/fh serve          # local web UI on 127.0.0.1:7878 (one-time code printed in the terminal)
 ```
 
-Install it somewhere on your `PATH` (`cargo install --path .` or copy the binary). Run `fh --help` for every option.
+**Installers** (attached to each release): Windows, no administrator needed, installs to `%LOCALAPPDATA%\Programs\fh`, verifies the SHA-256 and adds it to your user PATH:
+
+```powershell
+iwr -useb https://raw.githubusercontent.com/cardimvitor/frankenstein-harness/main/scripts/install.ps1 | iex
+.\install.ps1 -Uninstall      # to remove it
+```
+
+Linux and macOS: `curl -fsSL https://raw.githubusercontent.com/cardimvitor/frankenstein-harness/main/scripts/install.sh | bash` (installs to `~/.local/bin`). Both accept a version (`-Version v0.1.0` / `VERSION=v0.1.0`) and a local folder (`-Source` / `SOURCE=`) for offline installs. They cannot work until the first release is published (push a `v*` tag).
+
+Or install it somewhere on your `PATH` (`cargo install --path .` or copy the binary). Run `fh --help` for every option.
 
 vLLM flags this harness assumes (yours; the harness never changes them):
 
