@@ -21,6 +21,8 @@ pub struct Scripted {
     pub tool_calls: Vec<(String, Value)>,
     pub status: Option<u16>,
     pub delay_ms: u64,
+    /// (prompt, completion) tokens reported in the usage block (default 100/20)
+    pub usage: Option<(u64, u64)>,
 }
 
 impl Scripted {
@@ -123,7 +125,7 @@ async fn chat(State(state): State<Arc<Mutex<MockState>>>, headers: HeaderMap, Js
     if body.get("stream") == Some(&Value::Bool(false)) {
         let tcs: Vec<Value> = scripted.tool_calls.iter().enumerate().map(|(i, (n, a))| json!({"id": format!("c{i}"), "type": "function", "function": {"name": n, "arguments": args_str(a)}})).collect();
         let msg = json!({"role": "assistant", "content": scripted.content, "tool_calls": if tcs.is_empty() { Value::Null } else { Value::Array(tcs.clone()) }});
-        return Json(json!({"choices": [{"message": msg, "finish_reason": if tcs.is_empty() { "stop" } else { "tool_calls" }}], "usage": {"prompt_tokens": 100, "completion_tokens": 20}})).into_response();
+        return Json(json!({"choices": [{"message": msg, "finish_reason": if tcs.is_empty() { "stop" } else { "tool_calls" }}], "usage": {"prompt_tokens": scripted.usage.map(|u| u.0).unwrap_or(100), "completion_tokens": scripted.usage.map(|u| u.1).unwrap_or(20)}})).into_response();
     }
     let mut out = String::new();
     if let Some(r) = &scripted.reasoning {
@@ -143,7 +145,7 @@ async fn chat(State(state): State<Arc<Mutex<MockState>>>, headers: HeaderMap, Js
         }
     }
     out += &sse(json!({}), Some(if scripted.tool_calls.is_empty() { "stop" } else { "tool_calls" }));
-    out += &format!("data: {}\n\n", json!({"choices": [], "usage": {"prompt_tokens": 100, "completion_tokens": 20}}));
+    out += &format!("data: {}\n\n", json!({"choices": [], "usage": {"prompt_tokens": scripted.usage.map(|u| u.0).unwrap_or(100), "completion_tokens": scripted.usage.map(|u| u.1).unwrap_or(20)}}));
     out += "data: [DONE]\n\n";
     Response::builder().header(header::CONTENT_TYPE, "text/event-stream").body(Body::from(out)).unwrap()
 }

@@ -214,7 +214,7 @@ impl TaskResult {
             "llm": {"requests": self.llm.requests, "promptTokens": self.llm.prompt_tokens, "completionTokens": self.llm.completion_tokens, "cachedTokens": self.llm.cached_tokens, "toolCalls": self.llm.tool_calls, "repaired": self.llm.repaired, "malformed": self.llm.malformed, "thinkLeaks": self.llm.think_leaks, "retries": self.llm.retries},
             "metrics": {"acceptanceRate": self.metrics.acceptance_rate, "prefixHitRate": self.metrics.prefix_hit_rate, "meanAcceptedPerDraft": self.metrics.mean_accepted_per_draft, "perPositionAcceptance": self.metrics.per_position_acceptance},
             "verify": verify,
-            "workers": self.workers.iter().map(|w| json!({"id": w.id, "summary": w.summary, "touched": w.touched, "stopped": w.stopped.as_str(), "steps": w.steps})).collect::<Vec<_>>(),
+            "workers": self.workers.iter().map(|w| json!({"id": w.id, "summary": w.summary, "touched": w.touched, "stopped": w.stopped.as_str(), "steps": w.steps, "tokens": w.tokens, "blocked": w.blocked.len()})).collect::<Vec<_>>(),
             "agent": self.agent.as_ref().map(|a| json!({"steps": a.steps, "toolCalls": a.tool_calls, "failedTools": a.failed_tools, "stopped": a.stopped})),
             "reviewer": self.reviewer.as_ref().map(|r| json!({"raised": r.raised, "valid": r.valid, "dropped": r.dropped, "blockers": r.blockers})),
             "diff": self.diff,
@@ -546,6 +546,7 @@ impl Engine {
                 wrap_shell: wrap.clone(),
                 confirm: self.agent_options(&o, &context, &wrap).confirm,
                 extra_tools: self.mcp.get().cloned().unwrap_or_default(),
+                task_budget: self.cfg.max_task_tokens,
             };
             workers = run_workers(&plan.enriched, &plan.subtasks, &mo).await;
         } else {
@@ -622,7 +623,23 @@ impl Engine {
                     let msg = format!("{feedback}\n\nFix only problems in: {}", fs.join(", "));
                     jobs.push(tokio::spawn(async move { gov.run(run_agent(&msg, ao)).await.steps }));
                 }
-                if !unowned.is_empty() || jobs.is_empty() {
+                if !unowned.is_empty() {
+                    // failures in files nobody owns: one extra worker per directory, limited to those directories
+                    let mut groups: std::collections::BTreeMap<String, Vec<String>> = std::collections::BTreeMap::new();
+                    for f in &unowned {
+                        groups.entry(f.rsplit_once('/').map(|(d, _)| d.to_string()).unwrap_or_default()).or_default().push(f.clone());
+                    }
+                    for (dir, fs) in groups {
+                        let mut ao = self.agent_options(&o, &context, &wrap);
+                        ao.owned_globs = if dir.is_empty() { None } else { Some(vec![format!("{dir}/**")]) };
+                        ao.max_steps = 15;
+                        let gov = gov.clone();
+                        let msg = format!("{feedback}\n\nFix only problems in: {}", fs.join(", "));
+                        jobs.push(tokio::spawn(async move { gov.run(run_agent(&msg, ao)).await.steps }));
+                    }
+                }
+                if jobs.is_empty() {
+                    // nothing attributable to a file: a single unrestricted fixer
                     let mut ao = self.agent_options(&o, &context, &wrap);
                     ao.max_steps = 15;
                     let gov = gov.clone();

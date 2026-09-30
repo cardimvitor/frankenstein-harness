@@ -47,11 +47,13 @@ pub struct AgentOptions {
     pub context_window: usize,
     pub wrap_shell: Option<ShellWrap>,
     pub hooks: Option<Arc<crate::hooks::Hooks>>,
+    /// stop (Stopped::Budget) once this many prompt+completion tokens were used by this agent
+    pub token_budget: Option<u64>,
 }
 
 impl AgentOptions {
     pub fn new(llm: LlmClient, cwd: impl Into<PathBuf>, mode: Mode) -> Self {
-        AgentOptions { llm, cwd: cwd.into(), mode, thinking: None, max_steps: 40, cancel: None, tools: all_tools(), owned_globs: None, confirm: None, events: Events::default(), context: None, history: None, context_window: 131072, wrap_shell: None, hooks: None }
+        AgentOptions { llm, cwd: cwd.into(), mode, thinking: None, max_steps: 40, cancel: None, tools: all_tools(), owned_globs: None, confirm: None, events: Events::default(), context: None, history: None, context_window: 131072, wrap_shell: None, hooks: None, token_budget: None }
     }
 }
 
@@ -62,6 +64,7 @@ pub enum Stopped {
     Loop,
     Aborted,
     Error,
+    Budget,
 }
 
 impl Stopped {
@@ -72,6 +75,7 @@ impl Stopped {
             Stopped::Loop => "loop",
             Stopped::Aborted => "aborted",
             Stopped::Error => "error",
+            Stopped::Budget => "budget",
         }
     }
 }
@@ -85,6 +89,7 @@ pub struct AgentResult {
     pub error: Option<String>,
     pub tool_calls: usize,
     pub failed_tools: usize,
+    pub tokens: u64,
 }
 
 pub async fn run_agent(task: &str, o: AgentOptions) -> AgentResult {
@@ -110,6 +115,7 @@ pub async fn run_agent(task: &str, o: AgentOptions) -> AgentResult {
     messages.push(Message::user(task));
     let mut recent: Vec<String> = Vec::new();
     let (mut tool_calls, mut failed_tools, mut consecutive_fail) = (0usize, 0usize, 0usize);
+    let mut tokens_used: u64 = 0;
     let mut final_text = String::new();
     let mut stopped = Stopped::MaxSteps;
     let mut error: Option<String> = None;
@@ -159,6 +165,7 @@ pub async fn run_agent(task: &str, o: AgentOptions) -> AgentResult {
             .iter()
             .map(|t| WireToolCall { id: t.id.clone(), kind: "function".into(), function: WireFunction { name: t.name.clone(), arguments: if t.parse == ParseState::Malformed { "{}".into() } else { t.args.to_string() } } })
             .collect();
+        tokens_used += r.usage.prompt_tokens + r.usage.completion_tokens;
         messages.push(Message::assistant(if r.content.is_empty() { None } else { Some(r.content.clone()) }, wire));
         step += 1;
 
@@ -258,6 +265,11 @@ pub async fn run_agent(task: &str, o: AgentOptions) -> AgentResult {
         if let Some(f) = &o.events.on_messages {
             f(&messages);
         }
+        if o.token_budget.map(|b| tokens_used >= b).unwrap_or(false) {
+            stopped = Stopped::Budget;
+            error = Some(format!("stopped: token budget of {} reached", o.token_budget.unwrap_or(0)));
+            break;
+        }
         if recent.iter().any(|s| recent.iter().filter(|x| *x == s).count() >= 5) {
             stopped = Stopped::Loop;
             error = Some("stopped: repeated identical tool calls".into());
@@ -268,5 +280,5 @@ pub async fn run_agent(task: &str, o: AgentOptions) -> AgentResult {
         error = Some(format!("reached step limit ({})", o.max_steps));
     }
     let touched: Vec<String> = ctx.touched.lock().unwrap().iter().cloned().collect();
-    AgentResult { final_text, messages, steps: step, touched, stopped, error, tool_calls, failed_tools }
+    AgentResult { final_text, messages, steps: step, touched, stopped, error, tool_calls, failed_tools, tokens: tokens_used }
 }
