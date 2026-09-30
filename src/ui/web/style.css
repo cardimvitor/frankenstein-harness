@@ -60,5 +60,8 @@ details pre { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; 
 .composer { position: sticky; bottom: 0; background: var(--bg); padding-top: var(--s2); display: grid; gap: var(--s2); }
 .composer .row { display: flex; justify-content: space-between; align-items: center; gap: var(--s3); flex-wrap: wrap; }
 
-@media (max-width: 860px) { .layout { grid-template-columns: 1fr; } .msg.user { max-width: 100%; } }
+@media (max-width: 860px) { .layout { grid-template-columns: minmax(0, 1fr); padding: var(--s3); } .msg.user { max-width: 100%; } }
+.timeline > *, .chat > *, .side { min-width: 0; max-width: 100%; }
+.msg pre, details pre { max-width: 100%; overflow-x: auto; }
+details { overflow-wrap: anywhere; }
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; scroll-behavior: auto !important; } }

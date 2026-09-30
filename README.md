@@ -85,6 +85,8 @@ Linux and macOS are exercised. Windows is a target (PowerShell shell tool, `task
 ```bash
 npm test          # node:test, mock vLLM server, no model needed
 npm run typecheck
+# real-browser check of the web UI (needs Playwright + Chromium):
+PLAYWRIGHT_MODULE=$(npm root -g)/playwright node --disable-warning=ExperimentalWarning scripts/ui-smoke.mjs /tmp/fh-ui
 ```
 
 Source is TypeScript executed directly by Node's type stripping (erasable syntax only: no enums, no parameter properties).

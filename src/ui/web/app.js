@@ -117,7 +117,7 @@ const handlers = {
     add(card);
     const files = resetList('files', r.changed?.length ? '' : 'None');
     for (const f of r.changed ?? []) li(files, '', f);
-    const v = resetList('verify', 'No checks');
+    const v = resetList('verify', r.verify?.rounds?.length ? '' : 'No checks');
     for (const round of r.verify?.rounds ?? []) {
       li(v, round.verdict === 'fail' ? 'fail' : 'ok', `Round ${round.round}: ${round.verdict}`);
       for (const c of round.checks) li(v, c.status === 'pass' ? 'ok' : c.status === 'fail' ? 'fail' : 'skip', `  ${c.name}: ${c.status}`);
