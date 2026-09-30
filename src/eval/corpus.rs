@@ -26,7 +26,7 @@ fn f(p: &str, c: &str) -> (String, String) {
 }
 
 fn task(id: &str, tags: &[&str], prompt: &str, oracle: &str, files: Vec<(String, String)>) -> EvalTask {
-    EvalTask { id: id.into(), prompt: prompt.into(), oracle: oracle.into(), files, repo_dir: None, timeout_s: 900, tags: tags.iter().map(|s| s.to_string()).collect(), requires: None, setup: None, oracle_timeout_s: 300 }
+    EvalTask { id: id.into(), prompt: prompt.into(), oracle: oracle.replace("python3", crate::util::proc::python()), files, repo_dir: None, timeout_s: 900, tags: tags.iter().map(|s| s.to_string()).collect(), requires: None, setup: None, oracle_timeout_s: 300 }
 }
 
 fn js_tasks() -> Vec<EvalTask> {
@@ -152,7 +152,7 @@ fn py_tasks() -> Vec<EvalTask> {
         ),
     ];
     for t in &mut v {
-        t.requires = Some("python3".into());
+        t.requires = Some(if cfg!(windows) { "python" } else { "python3" }.into());
     }
     v
 }

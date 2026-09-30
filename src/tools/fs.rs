@@ -310,15 +310,16 @@ impl Tool for Edit {
 pub async fn syntax_feedback(abs: &Path, ctx: &ToolCtx) -> Option<String> {
     let ext = abs.extension()?.to_str()?.to_lowercase();
     let file = abs.to_string_lossy().to_string();
-    let q = |s: &str| format!("'{}'", s.replace('\'', "'\\''"));
+    // one quoting rule per shell: POSIX single quotes, or PowerShell single quotes with doubled quotes
+    let q = |s: &str| if cfg!(windows) { format!("'{}'", s.replace('\'', "''")) } else { format!("'{}'", s.replace('\'', "'\\''")) };
     let cmd = match ext.as_str() {
         "json" => {
             let text = std::fs::read_to_string(abs).ok()?;
             return serde_json::from_str::<Value>(&text).err().map(|e| format!("invalid JSON: {e}"));
         }
-        "py" => format!("python3 -c 'import ast,sys; ast.parse(open(sys.argv[1], encoding=\"utf-8\").read(), sys.argv[1])' {}", q(&file)),
+        "py" => format!("{} -c \"import ast,sys; ast.parse(open(sys.argv[1],encoding='utf-8').read(),sys.argv[1])\" {}", crate::util::proc::python(), q(&file)),
         "js" | "mjs" | "cjs" => format!("node --check {}", q(&file)),
-        "sh" => format!("bash -n {}", q(&file)),
+        "sh" if !cfg!(windows) => format!("bash -n {}", q(&file)),
         _ => return None,
     };
     let r = run(&cmd, &ctx.cwd, RunOpts { timeout: Some(Duration::from_secs(5)), cancel: ctx.cancel.clone(), env: None, wrap: ctx.wrap_shell.clone(), stdin: None }).await;

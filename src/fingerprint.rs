@@ -250,13 +250,13 @@ pub fn detect_verify(cwd: &Path, files: &[String], pkg: &Option<Value>) -> Vec<V
     let py_tests = Regex::new(r"(^|/)(test_.*|.*_test)\.py$").unwrap();
     let django = root_has("manage.py") && !pytest_marker;
     if django {
-        out.push(VerifyCmd { name: "django check".into(), cmd: "python3 manage.py check".into(), kind: VerifyKind::Build });
-        out.push(VerifyCmd { name: "django test".into(), cmd: "python3 manage.py test".into(), kind: VerifyKind::Test });
+        out.push(VerifyCmd { name: "django check".into(), cmd: format!("{} manage.py check", crate::util::proc::python()), kind: VerifyKind::Build });
+        out.push(VerifyCmd { name: "django test".into(), cmd: format!("{} manage.py test", crate::util::proc::python()), kind: VerifyKind::Test });
     } else if files.iter().any(|f| py_tests.is_match(f)) {
         if pytest_marker {
-            out.push(VerifyCmd { name: "pytest".into(), cmd: "python3 -m pytest -q".into(), kind: VerifyKind::Test });
+            out.push(VerifyCmd { name: "pytest".into(), cmd: format!("{} -m pytest -q", crate::util::proc::python()), kind: VerifyKind::Test });
         } else {
-            out.push(VerifyCmd { name: "unittest".into(), cmd: "python3 -m unittest discover -q".into(), kind: VerifyKind::Test });
+            out.push(VerifyCmd { name: "unittest".into(), cmd: format!("{} -m unittest discover -q", crate::util::proc::python()), kind: VerifyKind::Test });
         }
     }
     if files.iter().any(|f| f == "go.mod") {

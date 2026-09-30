@@ -20,10 +20,25 @@ jobs:
       - run: cargo build --release
       - if: matrix.os != 'windows-latest'
         run: cargo test --release
-      # the integration suites still assume POSIX sh/python3 and hang on Windows: run the unit tests there until they are ported
+      # Windows: run every integration test file on its own with a time limit, so a hang names the file instead of
+      # stalling the job, and print what failed. (Tests that need POSIX tools skip themselves or are being ported.)
       - if: matrix.os == 'windows-latest'
-        run: cargo test --release --lib
-        timeout-minutes: 15
+        shell: pwsh
+        timeout-minutes: 40
+        run: |
+          cargo test --lib
+          $failed = @()
+          foreach ($f in Get-ChildItem tests/*.rs) {
+            $n = $f.BaseName
+            $out = "out_$n.txt"; $err = "err_$n.txt"
+            $p = Start-Process cargo -ArgumentList "test --test $n -- --test-threads=4" -PassThru -NoNewWindow -RedirectStandardOutput $out -RedirectStandardError $err
+            if (-not $p.WaitForExit(300000)) { taskkill /PID $p.Id /T /F | Out-Null; $failed += "$n (timeout)"; Write-Host "=== $n: TIMEOUT" }
+            elseif ($p.ExitCode -ne 0) { $failed += $n; Write-Host "=== $n: FAILED" }
+            else { Write-Host "=== $n: ok" }
+            Get-Content $out -ErrorAction SilentlyContinue | Select-String -Pattern '^test |test result|panicked|^\[' | ForEach-Object { $_.Line }
+            if ($p.ExitCode -ne 0) { Get-Content $err -Tail 40 -ErrorAction SilentlyContinue }
+          }
+          if ($failed.Count -gt 0) { Write-Host "FAILED: $($failed -join ', ')"; exit 1 }
       - uses: actions/upload-artifact@v4
         with:
           name: fh-${{ matrix.os }}

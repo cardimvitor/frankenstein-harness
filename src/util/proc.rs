@@ -24,9 +24,33 @@ pub struct Shell {
 
 pub type ShellWrap = Arc<dyn Fn(Shell) -> Shell + Send + Sync>;
 
+/// The Python 3 interpreter command: `python3` on Unix; on Windows `python` (or the `py -3` launcher), because
+/// `python3.exe` there is often the Microsoft Store stub that opens the Store instead of running.
+pub fn python() -> &'static str {
+    static P: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
+    P.get_or_init(|| {
+        if !cfg!(windows) {
+            return "python3";
+        }
+        let ok = |prog: &str, args: &[&str]| std::process::Command::new(prog).args(args).arg("--version").stdin(Stdio::null()).output().map(|o| o.status.success() && String::from_utf8_lossy(&[o.stdout, o.stderr].concat()).contains("Python 3")).unwrap_or(false);
+        if ok("python", &[]) { "python" } else if ok("py", &["-3"]) { "py -3" } else { "python" }
+    })
+}
+
+/// PowerShell 7 (`pwsh`) when installed (UTF-8 by default, `&&` works), Windows PowerShell 5.1 otherwise.
+#[cfg(windows)]
+fn powershell() -> &'static str {
+    static P: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
+    P.get_or_init(|| if std::process::Command::new("pwsh").arg("-NoProfile").arg("-Command").arg("exit 0").stdin(Stdio::null()).output().map(|o| o.status.success()).unwrap_or(false) { "pwsh.exe" } else { "powershell.exe" })
+}
+
 pub fn shell_for(cmd: &str) -> Shell {
     if cfg!(windows) {
-        Shell { file: "powershell.exe".into(), args: vec!["-NoProfile".into(), "-NonInteractive".into(), "-Command".into(), cmd.into()] }
+        #[cfg(windows)]
+        let exe = powershell();
+        #[cfg(not(windows))]
+        let exe = "powershell.exe";
+        Shell { file: exe.into(), args: vec!["-NoProfile".into(), "-NonInteractive".into(), "-Command".into(), cmd.into()] }
     } else {
         Shell { file: "bash".into(), args: vec!["-c".into(), cmd.into()] }
     }
@@ -125,6 +149,9 @@ pub async fn run(cmd: &str, cwd: &Path, o: RunOpts) -> RunResult {
         });
     }
     let pid = child.id();
+    // Windows: the whole process tree lives in a job object, so a timeout or cancel kills all of it and nothing is left behind
+    #[cfg(windows)]
+    let job = super::winjob::Job::new(std::env::var("FH_MEMORY_LIMIT_MB").ok().and_then(|v| v.parse().ok())).and_then(|j| { pid.map(|p| j.assign(p)); Some(j) });
     let out = tokio::spawn(read_capped(child.stdout.take().unwrap()));
     let err = tokio::spawn(read_capped(child.stderr.take().unwrap()));
     let never = CancellationToken::new();
@@ -133,8 +160,8 @@ pub async fn run(cmd: &str, cwd: &Path, o: RunOpts) -> RunResult {
     let timeout = o.timeout.unwrap_or(Duration::from_secs(24 * 3600));
     let status = tokio::select! {
         s = child.wait() => s.ok(),
-        _ = tokio::time::sleep(timeout) => { timed_out = true; if let Some(p) = pid { kill_tree(p); } child.wait().await.ok() }
-        _ = cancel.cancelled() => { aborted = true; if let Some(p) = pid { kill_tree(p); } child.wait().await.ok() }
+        _ = tokio::time::sleep(timeout) => { timed_out = true; #[cfg(windows)] if let Some(j) = &job { j.terminate(); } if let Some(p) = pid { kill_tree(p); } child.wait().await.ok() }
+        _ = cancel.cancelled() => { aborted = true; #[cfg(windows)] if let Some(j) = &job { j.terminate(); } if let Some(p) = pid { kill_tree(p); } child.wait().await.ok() }
     };
     // descendants may keep the pipes open after the shell exits; do not wait on them past a short grace period
     let stdout = tokio::time::timeout(Duration::from_secs(2), out).await.ok().and_then(|r| r.ok()).unwrap_or_default();
