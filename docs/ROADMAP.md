@@ -31,12 +31,12 @@ Nothing below can be settled by reading code; each needs `scripts/vps-validate.s
 
 ## 3. Small follow-ups I would do next
 
-1. Skill lifecycle from Hermes: stale (14 days) and archived (30 days) by inactivity, and a `pin` flag; deterministic, never deletes.
-2. Cross-session search over past task sessions (`fh search`), the best-value idea from Hermes' memory system.
+1. Skill lifecycle from Hermes: stale (14 days) and archived (30 days) by inactivity, and a `pin` flag; deterministic, never deletes. (not started; you asked to stay with what we have)
+2. (done) Cross-session search: `fh search`, `/search`, web "Past tasks" search.
 3. Run the miner/IMPROVE/research calls with the stable prompt prefix so they reuse vLLM's prefix cache (measure on the VPS first).
-4. Windows filesystem sandbox (accounts + ACLs, or documented VM requirement) and a Windows installer.
+4. Windows filesystem sandbox (accounts + ACLs, or documented VM requirement). (The Windows installer is done: scripts/install.ps1, tested with real PowerShell 7 on Linux; not yet run on Windows.)
 5. MCP: resources and prompts, OAuth for servers without dynamic client registration (pre-registered client id).
-6. Web UI: search in the file viewer, keyboard navigation in the tree.
+6. (done) Web UI file search with jump-to-line. Still open: keyboard navigation in the tree.
 
 ## 4. Decisions so far (your answers, 2026-09-30)
 

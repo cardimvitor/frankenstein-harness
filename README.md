@@ -81,6 +81,7 @@ Override what gets verified with `.fh/verify.json`: `[{"name":"build","cmd":"dot
 | `fh validate-vllm` | measure MTP acceptance, prefix cache, tool-call reliability, long context, concurrency, cancellation |
 | `fh eval` | run the eval corpus, optionally against plain Qwen Code ([docs/EVAL.md](docs/EVAL.md)) |
 | `fh undo` / `fh keep` | restore the working tree to the last checkpoint / apply the last rejected patch anyway (both recorded as verifier signals in `fh stats`) |
+| `fh search <words> [--all]` | search past task sessions (what was asked, the plan, what was delivered, files touched); also `/search` in the TUI and a "Past tasks" search in the web UI, which also searches workspace files and jumps to the line |
 | `fh sessions`, `fh resume [id]` | list task sessions; continue an interrupted one with its stored plan and checkpoint (also `/resume` in the TUI, a button in the web UI) |
 | `fh mcp list\|login <server>\|logout <server>` | MCP servers; `login` signs in to remote servers that need OAuth |
 | `fh trust [--revoke\|--list]` | allow project hooks, MCP servers and LSP commands in this repository |
