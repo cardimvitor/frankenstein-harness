@@ -1,5 +1,7 @@
 # Using LiteLLM in front of vLLM
 
+**Chosen authentication (2026-09-30): LiteLLM.** vLLM listens only on the VPS itself (or a private address) with its own `--api-key`; people and tools reach it through the LiteLLM proxy, which issues per-user keys. `fh` needs nothing new: it sends the LiteLLM key as a bearer token.
+
 Yes, it works. Verified 2026-09-30 with LiteLLM 1.103.1 (`litellm[proxy]`) in front of a capture server that speaks vLLM's OpenAI API (not a real vLLM). What was checked, through the proxy, with the exact request `fh` sends:
 
 | What `fh` relies on | Through LiteLLM |
@@ -44,3 +46,12 @@ export FH_METRICS_URL=http://127.0.0.1:8000/metrics   # see below
 - **Per-user keys and budgets** need LiteLLM's database (`general_settings.database_url`) and virtual keys. `fh` just sends the key as a bearer token.
 - Prefix caching, MTP and the KV cache are vLLM's business and are unaffected, as long as the stable system prompt reaches vLLM unchanged (LiteLLM does not rewrite messages).
 - Not verified: behaviour under sustained load, LiteLLM's own rate limiting, and a real vLLM (only the request/stream shapes above).
+
+## Setting it up as the authentication layer
+1. Start vLLM bound to `127.0.0.1` with `--api-key $VLLM_API_KEY` (`deploy/vllm/serve.sh` already reads the key from the environment).
+2. Run LiteLLM with the config above on a public or private address, behind TLS (Caddy or nginx) if it is reachable from the internet. Set a strong `LITELLM_MASTER_KEY`.
+3. For per-user keys, budgets and revocation, give LiteLLM a database (`general_settings.database_url`) and create virtual keys with its key-management API or UI; the master key stays with you.
+4. On each machine that runs `fh`: `FH_ENDPOINT=https://<litellm-host>/v1`, `FH_MODEL=qwen` (the LiteLLM model name), `FH_API_KEY=<the person's key>` or store it once with `fh auth set`.
+5. Keep `FH_METRICS_URL` pointed at vLLM's `/metrics` for the machine that can reach it (or leave it unset; the governor then does not adapt).
+
+Rotating or revoking a key is done in LiteLLM; vLLM's key never leaves the server.

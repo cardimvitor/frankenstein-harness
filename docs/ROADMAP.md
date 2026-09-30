@@ -45,8 +45,8 @@ Nothing below can be settled by reading code; each needs `scripts/vps-validate.s
 | .NET Framework 4.8 on Windows a launch requirement? | **Yes** | Windows moves from "later" to launch-blocking: classic projects are now built with MSBuild and tested with vstest.console (located through vswhere; **written, not yet run on Windows**). Still needed before launch: run it on a real Windows host with a .NET Framework solution, job objects, a Windows sandbox (or a documented VM requirement), portable integration tests so the Windows CI job can block. |
 | MCP servers | **All** | Any stdio or streamable-HTTP server works, and remote servers that need OAuth now work too: `fh mcp login <server>` runs OAuth 2.1 (discovery, dynamic client registration, PKCE S256, resource indicators) and tokens refresh automatically (tested against a mock authorization server; **not** yet against GitHub, Sentry or Linear themselves). Servers without dynamic client registration are not supported yet. First-tier list to try: filesystem, git, fetch, GitHub, Playwright, a SQL server, docs (Context7), memory. |
 | Language servers | **C#, TypeScript, JavaScript, Python, Rust** | Python (pyright), TypeScript/JavaScript (TypeScript 7 native server, or typescript-language-server for older projects) and Rust (rust-analyzer) are tested against the real servers, and servers are now kept warm between rounds. C# (`csharp-ls`) is wired but unrun, and classic .NET Framework projects need MSBuild on the machine. |
-| Token cost of fan-out | rule proposed in section 5 (awaiting your numbers) | the eval report now prints uncached tokens per solved task, wall time per solved task, and a PASS/FAIL line for each part of the rule |
-| Auth beyond bearer | open: see 6 | LiteLLM in front of vLLM is verified for the request shapes `fh` sends (docs/LITELLM.md); it fits the "gateway with per-user keys" row |
+| Token cost of fan-out | **the rule in section 5, numbers as proposed** (80% time or +5 points, 2x cost); written up in docs/FANOUT.md | the eval report now prints uncached tokens per solved task, wall time per solved task, and a PASS/FAIL line for each part of the rule |
+| Auth beyond bearer | **LiteLLM in front of vLLM** (per-user keys) | documented in docs/LITELLM.md; nothing to build. mTLS and the token command stay available | LiteLLM in front of vLLM is verified for the request shapes `fh` sends (docs/LITELLM.md); it fits the "gateway with per-user keys" row |
 | First eval baseline | your one repository later, plus famous benchmarks | Adapters exist for the Aider polyglot benchmark (all six languages verified) and SWE-bench Verified; see 7. |
 | Trust step per repository | **Yes** | already how it works (`fh trust`) |
 
@@ -88,7 +88,6 @@ Suggested first baseline: about 60 polyglot tasks (10 per language) with `--repe
 
 ## 8. Still open
 
-1. Approve the fan-out rule in section 5 (or change the numbers).
-2. Pick the auth option in section 6.
+1. (settled) fan-out rule: docs/FANOUT.md. (settled) auth: LiteLLM.
 3. Try `fh mcp login` against one real remote server you use (GitHub, Sentry, ...) and tell me which one fails.
 4. Send the test repository whenever it is ready.
