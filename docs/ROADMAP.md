@@ -38,12 +38,57 @@ Nothing below can be settled by reading code; each needs `scripts/vps-validate.s
 4. Per-repo `.fh/config.json` schema documentation (the options are listed in README and SECURITY only in part).
 5. Web UI: search in the file viewer, keyboard navigation in the tree.
 
-## 4. Questions for you
+## 4. Decisions so far (your answers, 2026-09-30)
 
-1. Is .NET Framework 4.8 on Windows a launch requirement, or can Windows follow Linux/macOS?
-2. Which MCP servers matter first?
-3. Which language servers matter most (TypeScript and Python are verified; C# and Go are not)?
-4. Acceptable token cost for multi-agent fan-out relative to a single agent (for example at most 1.5x tokens for a faster wall time)?
-5. Which auth scheme will the vLLM service require? (bearer, mTLS and a token command are implemented)
-6. First eval baseline: how many tasks, and what mix of your own tasks vs SWE-bench?
-7. Project hooks, MCP servers and LSP commands already require `fh trust` per repository; confirm that is what you want.
+| Question | Answer | Consequence |
+|---|---|---|
+| .NET Framework 4.8 on Windows a launch requirement? | **Yes** | Windows moves from "later" to launch-blocking: classic projects are now built with MSBuild and tested with vstest.console (located through vswhere; **written, not yet run on Windows**). Still needed before launch: run it on a real Windows host with a .NET Framework solution, job objects, a Windows sandbox (or a documented VM requirement), portable integration tests so the Windows CI job can block. |
+| MCP servers | **All** | The client is generic, so any stdio or streamable-HTTP server works. Remote servers that need OAuth (GitHub, Sentry, Linear, Atlassian, ...) do **not** work yet: OAuth 2.1 with PKCE and dynamic client registration is the missing piece. Ranked first-tier list to test: filesystem, git, fetch, GitHub, Playwright, a SQL server, docs (Context7), memory. |
+| Language servers | **C#, TypeScript, JavaScript, Python, Rust** | Python (pyright), TypeScript/JavaScript (TypeScript 7 native server, or typescript-language-server for older projects) and Rust (rust-analyzer) are tested against the real servers. C# (`csharp-ls`) is wired but unrun, and classic .NET Framework projects will need MSBuild on the machine. |
+| Token cost of fan-out | open: see 5 | |
+| Auth beyond bearer | open: see 6 | |
+| First eval baseline | your one repository later, plus famous benchmarks | Adapters exist for the Aider polyglot benchmark (all six languages verified) and SWE-bench Verified; see 7. |
+| Trust step per repository | **Yes** | already how it works (`fh trust`) |
+
+## 5. Thinking about fan-out cost
+
+Your model runs on your own GPU, so a token has no invoice: what fan-out spends is **wall time, GPU queue and KV-cache room**, and it earns **speed and isolation**. Count what actually costs GPU work: *uncached prompt tokens + completion tokens* (a cached prompt token is nearly free because prefix caching reuses it). Workers share the stable system prompt, so most of their prompt tokens are cached; a worker's real cost is its own context plus its output.
+
+A rule you can adopt and the eval will check:
+
+1. **Quality first**: fan-out must not lower the pass rate versus `fh-single` on the multi-file tasks.
+2. **Then it must pay for itself**: wall time at most 0.8x of single-agent, *or* pass rate at least 5 points higher.
+3. **Cost ceiling**: uncached-plus-completion tokens per solved task at most 2x single-agent (1.5x if you share the GPU with other work).
+4. **Stay narrow**: fan out only when the planner declares two or more subtasks with disjoint files (already so); everything else runs as one agent.
+
+The harness already caps a task (`maxTaskTokens`, workers get 60% of it). What is missing is the measurement: the eval report should show *uncached tokens per solved task* and wall time per runner, so the rule above is a computed pass/fail line rather than a judgement. That is a small change I can make next.
+
+## 6. Auth options beyond bearer (for a vLLM on a VPS)
+
+| Option | Good when | Effort | State |
+|---|---|---|---|
+| **Private network (Tailscale or WireGuard) + bearer key** | one person or a small team; you do not want vLLM on the public internet | lowest | works today: bind vLLM to the tailnet address, keep `--api-key` |
+| **SSH tunnel + bearer** | one person, occasional use | very low | works today (`ssh -L 8000:127.0.0.1:8000`) |
+| **Reverse proxy with TLS + mTLS** (Caddy or nginx) | you must expose it publicly and want device-bound access | medium (certificates) | client side implemented (`clientCert`, `clientKey`, `caCert`) |
+| **Reverse proxy with OIDC/JWT** (Cloudflare Access, oauth2-proxy, Keycloak) | several users, revocation, audit | medium-high | client side works through `authTokenCmd` (any CLI that prints a fresh token, refreshed after a 401) |
+| **API gateway with per-user keys** (LiteLLM, Envoy) | usage limits and per-person accounting | medium | works as bearer; nothing to build |
+
+Recommendation for a single RTX 6000 VPS used by you: **Tailscale + the vLLM `--api-key`**. It is the smallest attack surface for the least work, and the harness needs no change. Choose mTLS only if the port must be public.
+
+## 7. Benchmarks, in the order I would run them
+
+| Benchmark | What it tells you | Runnable here | Notes |
+|---|---|---|---|
+| **Aider polyglot** (225 Exercism tasks: C++, Go, Java, JavaScript, Python, Rust) | multi-language editing quality; the most-quoted agent number for open models | **yes**: `scripts/polyglot_to_tasks.py --verify`, all six languages verified | start here; fast, hundreds of tasks, no containers |
+| **SWE-bench Verified** (500 real GitHub issues) | real repository bug fixing | adapter exists; needs each repo's dependencies | the official runs use one Docker image per instance. Planned fix: mount the static musl `fh` binary into those images and use their own test scripts as the oracle |
+| **Terminal-Bench** | terminal and environment tasks | no adapter | needs Docker on the VPS |
+| **Your repository** | what you actually care about, including .NET | `fh record` | send it when ready; also gives the C#/.NET signal no public benchmark provides |
+
+Suggested first baseline: about 60 polyglot tasks (10 per language) with `--repeat 3`, plus 20 to 30 SWE-bench Verified instances from one or two repositories, plus your own tasks. Run `fh`, `fh-single` and plain Qwen Code on the same set, and let the rule in section 5 decide.
+
+## 8. Still open
+
+1. Approve the fan-out rule in section 5 (or change the numbers).
+2. Pick the auth option in section 6.
+3. Say whether OAuth for remote MCP servers is worth building now, or whether local stdio servers cover you for the launch.
+4. Send the test repository whenever it is ready.
