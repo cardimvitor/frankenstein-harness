@@ -70,12 +70,12 @@ def oracle_script(repo, f2p, p2p, pytest_cmd, allow_unknown):
     if repo == "django/django":
         labels = sorted({django_label(t) for t in f2p + p2p})
         body = "\n".join(labels)
-        return ("set -e\nxargs -d '\\n' python tests/runtests.py --settings=test_sqlite --parallel 1 <<'FH_TESTS'\n" + body + "\nFH_TESTS\n")
+        return ("set -e\ntr '\\n' '\\0' <<'FH_TESTS' | xargs -0 python tests/runtests.py --settings=test_sqlite --parallel 1\n" + body + "\nFH_TESTS\n")
     if repo == "sympy/sympy" and not allow_unknown:
         return None
     ids = f2p + p2p
     # tests in the same file are passed once per id; xargs batches them and fails if any batch fails
-    return ("set -e\nxargs -d '\\n' " + pytest_cmd + " <<'FH_TESTS'\n" + "\n".join(ids) + "\nFH_TESTS\n")
+    return ("set -e\ntr '\\n' '\\0' <<'FH_TESTS' | xargs -0 " + pytest_cmd + "\n" + "\n".join(ids) + "\nFH_TESTS\n")
 
 
 def ensure_mirror(cache, repo, template):
