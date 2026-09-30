@@ -24,9 +24,29 @@ pub fn seatbelt_profile(cwd: &str, network: bool) -> String {
     )
 }
 
-/// OS-level write confinement for shell commands. Linux: bubblewrap; macOS: Seatbelt. Windows: not implemented.
+/// Wrapper that re-executes `exe` as `__sandbox-exec` (Landlock + seccomp), then runs the command.
+#[cfg(target_os = "linux")]
+pub fn landlock_wrap(exe: std::path::PathBuf, cwd: &str, network: bool, extra_write: &str) -> ShellWrap {
+    let (exe, cwd, extra) = (exe.to_string_lossy().to_string(), cwd.to_string(), if extra_write.is_empty() { "-".to_string() } else { extra_write.to_string() });
+    Arc::new(move |c: Shell| {
+        let mut a = vec!["__sandbox-exec".to_string(), cwd.clone(), if network { "1".into() } else { "0".into() }, extra.clone(), "--".to_string(), c.file.clone()];
+        a.extend(c.args.clone());
+        Shell { file: exe.clone(), args: a }
+    })
+}
+
+/// OS-level write confinement for shell commands. Linux: native Landlock + seccomp (no external binary),
+/// bubblewrap as the alternative (`FH_SANDBOX=bwrap`); macOS: Seatbelt. Windows: not implemented.
 pub fn sandbox_for(cwd: &Path, network: bool) -> (Option<ShellWrap>, &'static str) {
     let cwd = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf()).to_string_lossy().to_string();
+    let prefer = std::env::var("FH_SANDBOX").unwrap_or_default();
+    #[cfg(target_os = "linux")]
+    if prefer != "bwrap" && crate::util::landlock::abi() >= 1 {
+        if let Ok(exe) = std::env::current_exe() {
+            let extra = std::env::var("FH_SANDBOX_WRITE").unwrap_or_default();
+            return (Some(landlock_wrap(exe, &cwd, network, &extra)), "landlock");
+        }
+    }
     if cfg!(target_os = "linux") && have("bwrap") {
         let f: ShellWrap = Arc::new(move |c| bwrap_args(&cwd, network, &c));
         return (Some(f), "bwrap");
