@@ -192,3 +192,22 @@ async fn full_guided_session_through_the_tui_pipeline() {
     assert!(a.verify.iter().any(|(t, s)| t.contains("unittest") && s == "pass"), "{:?}", a.verify);
     assert!(std::fs::read_to_string(d.path().join("mathx.py")).unwrap().contains("b + 1"));
 }
+
+#[test]
+fn resume_and_sessions_commands() {
+    let mut a = app();
+    type_str(&mut a, "/sessions");
+    assert_eq!(a.on_key(key(KeyCode::Enter)), Action::Sessions);
+    assert!(!a.busy && a.input.is_empty());
+    type_str(&mut a, "/resume");
+    assert_eq!(a.on_key(key(KeyCode::Enter)), Action::Resume(None));
+    assert!(a.busy && matches!(a.items.last(), Some(Item::User(t)) if t == "/resume"));
+    let mut b = app();
+    type_str(&mut b, "/resume 0001700000000");
+    assert_eq!(b.on_key(key(KeyCode::Enter)), Action::Resume(Some("0001700000000".into())));
+    // while a task runs, neither starts a second one
+    let mut c = app();
+    c.busy = true;
+    type_str(&mut c, "/resume");
+    assert_eq!(c.on_key(key(KeyCode::Enter)), Action::None);
+}

@@ -24,7 +24,7 @@ pub struct TuiOptions {
 pub async fn run_tui(cfg: Config, env: Env, cwd: PathBuf, store: SkillStore, o: TuiOptions) -> i32 {
     let (tx, mut rx) = unbounded_channel::<UiEvent>();
     let io = Arc::new(TuiIo { tx: tx.clone() });
-    let engine = Arc::new(Engine::new(cfg.clone(), env, io, cwd.clone(), store));
+    let engine = Arc::new(Engine::new(cfg.clone(), env.clone(), io, cwd.clone(), store));
     let mut app = App::new(&cfg.model, &cfg.endpoint, &cwd.to_string_lossy(), o.approval, o.auto);
     app.items.push(super::app::Item::Notice(crate::engine::NoticeKind::Info, format!("{} @ {} — F1 for keys", cfg.model, cfg.endpoint)));
 
@@ -82,6 +82,32 @@ pub async fn run_tui(cfg: Config, env: Env, cwd: PathBuf, store: SkillStore, o: 
                     t.cancel();
                 }
             }
+            Action::Sessions => {
+                let fp = crate::fingerprint::fingerprint(&cwd);
+                let rows = crate::session::log::list(&env, &fp.project_id);
+                if rows.is_empty() {
+                    app.apply(UiEvent::Notice(crate::engine::NoticeKind::Info, "no sessions yet".into()));
+                }
+                for s in rows.iter().take(8) {
+                    app.apply(UiEvent::Notice(crate::engine::NoticeKind::Info, format!("{}  {:<12} {}", s.id, s.verdict.clone().unwrap_or_else(|| "interrupted".into()), s.task.chars().take(60).collect::<String>())));
+                }
+            }
+            Action::Resume(id) => match crate::engine::load_resume(&env, &cwd, id.as_deref()) {
+                Err(e) => {
+                    let _ = tx.send(UiEvent::Result(Box::new(crate::engine::TaskResult::new("error", &e))));
+                }
+                Ok((task, state)) => {
+                    let token = CancellationToken::new();
+                    *cancel.lock().unwrap() = Some(token.clone());
+                    let (engine, tx2) = (engine.clone(), tx.clone());
+                    let opts = TaskOptions { auto: app.auto, approval: app.approval, sandbox: o.sandbox, commit: o.commit, cancel: Some(token), resume: Some(state), ..Default::default() };
+                    tokio::spawn(async move {
+                        let r = engine.run_task(&task, opts).await;
+                        let _ = tx2.send(UiEvent::Result(Box::new(r)));
+                        engine.drain(20_000).await;
+                    });
+                }
+            },
             Action::Submit(text) => {
                 let token = CancellationToken::new();
                 *cancel.lock().unwrap() = Some(token.clone());

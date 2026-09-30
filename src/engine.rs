@@ -170,7 +170,7 @@ pub struct TaskResult {
 }
 
 impl TaskResult {
-    fn new(verdict: &str, reason: &str) -> Self {
+    pub fn new(verdict: &str, reason: &str) -> Self {
         TaskResult {
             verdict: verdict.into(),
             final_text: String::new(),

@@ -32,6 +32,10 @@ pub enum Action {
     /// cancel the running task
     Cancel,
     Quit,
+    /// continue an interrupted session (optionally a specific id)
+    Resume(Option<String>),
+    /// list this repository's sessions
+    Sessions,
 }
 
 pub struct App {
@@ -232,6 +236,20 @@ impl App {
                 if self.busy {
                     self.items.push(Item::Notice(NoticeKind::Warn, "a task is running; press Esc to stop it".into()));
                     return Action::None;
+                }
+                if t == "/sessions" {
+                    self.input.clear();
+                    self.cursor = 0;
+                    return Action::Sessions;
+                }
+                if t == "/resume" || t.starts_with("/resume ") {
+                    self.input.clear();
+                    self.cursor = 0;
+                    self.items.push(Item::User(t.clone()));
+                    self.busy = true;
+                    self.verify.clear();
+                    self.scroll = 0;
+                    return Action::Resume(t.strip_prefix("/resume").map(|s| s.trim().to_string()).filter(|s| !s.is_empty()));
                 }
                 self.input.clear();
                 self.cursor = 0;
