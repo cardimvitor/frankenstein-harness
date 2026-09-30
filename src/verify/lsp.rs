@@ -243,7 +243,7 @@ impl Client {
         loop {
             // settled = we have diagnostics and the server reports nothing still loading; then a short quiet period ends the wait
             let settled = latest.is_some() && self.active.is_empty() && self.quiescent != Some(false);
-            let wait = if settled { Duration::from_millis(600) } else { deadline.saturating_duration_since(tokio::time::Instant::now()) };
+            let wait = if settled { Duration::from_millis(300) } else { deadline.saturating_duration_since(tokio::time::Instant::now()) };
             let Ok(Some(m)) = tokio::time::timeout(wait, self.rx.recv()).await else { break };
             if std::env::var_os("FH_LSP_DEBUG").is_some() {
                 eprintln!("[lsp msg] {} {} active={} settled={}", m["method"].as_str().unwrap_or("<response>"), if m["method"] == "textDocument/publishDiagnostics" { format!("{} v{} n={}", m["params"]["uri"], m["params"]["version"], m["params"]["diagnostics"].as_array().map(|a| a.len()).unwrap_or(0)) } else { String::new() }, self.active.len(), settled);
@@ -351,6 +351,8 @@ fn new_errors(base: &[Value], cur: &[Value]) -> Vec<Value> {
 /// indexing) is paid once, and `warm` lets it overlap with the model's planning and coding time.
 #[derive(Default)]
 pub struct LspPool {
+    /// diagnostics of a file at the base checkpoint, keyed by (uri, base id): identical in every round of a task
+    base_cache: std::sync::Mutex<HashMap<(String, String), Vec<Value>>>,
     slots: std::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<Option<Client>>>>>,
 }
 
@@ -430,11 +432,20 @@ pub async fn diagnostics_check_pooled(pool: &Arc<LspPool>, cwd: &Path, cp: &Chec
             let cur_text = std::fs::read_to_string(cwd.join(f)).unwrap_or_default();
             let file_uri = uri(&root.join(f));
             let base_text = cp.file_at(base, f).await;
+            let cache_key = (file_uri.clone(), base.to_string());
+            let cached = pool.base_cache.lock().unwrap().get(&cache_key).cloned();
             let base_diags = match &base_text {
+                Some(_) if cached.is_some() => {
+                    // same base as an earlier round: only the current text has to be analysed
+                    cl.drain().await;
+                    cl.open(&file_uri, &lang, 1, &cur_text).await;
+                    cached.clone().unwrap()
+                }
                 Some(bt) => {
                     cl.drain().await;
                     cl.open(&file_uri, &lang, 1, bt).await;
                     let d = cl.diagnostics(&file_uri, 1, timeout).await;
+                    pool.base_cache.lock().unwrap().insert(cache_key, d.clone());
                     cl.drain().await;
                     cl.change(&file_uri, 2, &cur_text).await;
                     d
@@ -445,7 +456,7 @@ pub async fn diagnostics_check_pooled(pool: &Arc<LspPool>, cwd: &Path, cp: &Chec
                     vec![]
                 }
             };
-            let cur_version = if base_text.is_some() { 2 } else { 1 };
+            let cur_version = if base_text.is_some() && cached.is_none() { 2 } else { 1 };
             let cur = cl.diagnostics(&file_uri, cur_version, timeout).await;
             cl.close(&file_uri).await;
             if std::env::var_os("FH_LSP_DEBUG").is_some() {

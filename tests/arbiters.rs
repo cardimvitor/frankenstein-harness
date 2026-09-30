@@ -213,3 +213,35 @@ mod real_rust_analyzer {
         assert!(r.detail.contains("src/lib.rs:3"), "{}", r.detail);
     }
 }
+
+mod pooled {
+    use super::*;
+    use fh::verify::lsp::{diagnostics_check_pooled, load_specs, LspPool};
+
+    #[tokio::test]
+    async fn a_warm_server_makes_later_checks_much_cheaper() {
+        if !have("pyright-langserver") {
+            eprintln!("skipped: pyright-langserver not installed");
+            return;
+        }
+        let d = repo(&[("m.py", "def f(x: int) -> int:\n    return x\n")]);
+        let cp = Checkpoints::new(d.path());
+        let base = cp.create("base").await.unwrap();
+        let specs = load_specs(d.path(), &Default::default());
+        let pool = LspPool::new();
+        pool.warm(&specs, d.path()); // startup overlaps whatever the caller does next
+        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+        std::fs::write(d.path().join("m.py"), "def f(x: int) -> int:\n    return x\n\n\ndef g() -> str:\n    return f(\"a\")\n").unwrap();
+        let t0 = std::time::Instant::now();
+        let r1 = diagnostics_check_pooled(&pool, d.path(), &cp, &base, &["m.py".into()], &specs).await.unwrap();
+        let first = t0.elapsed();
+        assert_eq!(r1.status, Status::Fail, "{}", r1.detail);
+        let t1 = std::time::Instant::now();
+        let r2 = diagnostics_check_pooled(&pool, d.path(), &cp, &base, &["m.py".into()], &specs).await.unwrap();
+        let second = t1.elapsed();
+        assert_eq!(r2.status, Status::Fail);
+        eprintln!("first check {first:?}, second check {second:?}");
+        assert!(second < std::time::Duration::from_millis(1000), "a reused server answers quickly: {second:?}");
+        pool.shutdown().await;
+    }
+}
