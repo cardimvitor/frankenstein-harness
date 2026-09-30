@@ -8,6 +8,10 @@ fn sh(cwd: &Path, c: &str) {
     assert!(Command::new("sh").arg("-c").arg(c).current_dir(cwd).status().unwrap().success(), "{c}");
 }
 
+fn have(bin: &str) -> bool {
+    Command::new("which").arg(bin).output().map(|o| o.status.success()).unwrap_or(false)
+}
+
 fn repo(files: &[(&str, &str)]) -> tempfile::TempDir {
     let d = tempfile::tempdir().unwrap();
     for (n, c) in files {
@@ -42,6 +46,10 @@ async fn format_check_blames_only_files_that_were_clean() {
 
 #[tokio::test]
 async fn format_check_gofmt_and_not_applicable() {
+    if !have("gofmt") {
+        eprintln!("skipped: gofmt not installed");
+        return;
+    }
     let d = repo(&[("go.mod", "module x\n\ngo 1.21\n"), ("a.go", "package x\n\nfunc A() {}\n"), ("README.md", "hi\n")]);
     let cp = Checkpoints::new(d.path());
     let base = cp.create("base").await.unwrap();
@@ -54,6 +62,10 @@ async fn format_check_gofmt_and_not_applicable() {
 
 #[tokio::test]
 async fn format_check_needs_config_for_ruff() {
+    if !have("ruff") {
+        eprintln!("skipped: ruff not installed");
+        return;
+    }
     let d = repo(&[("a.py", "x = 1\n")]);
     let cp = Checkpoints::new(d.path());
     let base = cp.create("base").await.unwrap();

@@ -39,6 +39,7 @@ pub fn landlock_wrap(exe: std::path::PathBuf, cwd: &str, network: bool, extra_wr
 /// bubblewrap as the alternative (`FH_SANDBOX=bwrap`); macOS: Seatbelt. Windows: not implemented.
 pub fn sandbox_for(cwd: &Path, network: bool) -> (Option<ShellWrap>, &'static str) {
     let cwd = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf()).to_string_lossy().to_string();
+    #[cfg(target_os = "linux")]
     let prefer = std::env::var("FH_SANDBOX").unwrap_or_default();
     #[cfg(target_os = "linux")]
     if prefer != "bwrap" && crate::util::landlock::abi() >= 1 {
