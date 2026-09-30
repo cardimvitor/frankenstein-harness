@@ -40,9 +40,11 @@ my-tasks/
     repo/            the starting state of the repository
 ```
 
-- **Recorded tasks from your own work** (.NET, React, Angular): snapshot the repo before the change into `repo/`, put the prompt you used in `task.json`, and use the tests (or a script) that proved the change as the `oracle`.
-- **SWE-bench Verified subset**: for each instance, check out `base_commit` into `repo/`, apply the instance's `test_patch` to `repo/`, and use the `FAIL_TO_PASS` and `PASS_TO_PASS` tests as the oracle command. Build a subset that fits your language and time budget.
-- **Terminal-Bench**: wrap each task's container-free steps as `repo/` plus an oracle script; tasks needing their own containers are out of scope for this runner.
+- **Recorded tasks from your own work** (.NET, React, Angular): `fh record <id> --prompt "..." --oracle "dotnet test" --base <rev-before> --solution <rev-after> --out eval/tasks`. It exports the base revision to `repo/`, stores the finished change as `solution.patch` (outside `repo/`), and **validates the task**: the oracle must fail on the base and pass with the solution applied, otherwise it refuses (`--force` overrides). Optional `--setup "<cmd>"` prepares each copy (for example installing dependencies).
+- **SWE-bench Verified subset**: `python3 scripts/swebench_to_tasks.py instances.jsonl --out eval/tasks --limit 25 --repos pallets/flask --setup-cmd "pip install -e ."` (or `--download N` to fetch rows from Hugging Face). It clones each repository, checks out `base_commit`, applies the hidden `test_patch`, strips `.git`, and writes `oracle.sh` (FAIL_TO_PASS + PASS_TO_PASS) **beside** `repo/` so the agent cannot read it. Django uses its own runner; repositories with unknown runners (sympy) are skipped unless `--allow-unknown`. The oracle needs the project's dependencies installed in the environment that runs `fh eval` (SWE-bench itself uses one Docker image per instance; this adapter does not). It uses `xargs -d`, so it needs GNU xargs (Linux).
+- **Terminal-Bench**: no adapter. Its tasks run inside containers, which this runner does not manage. A task that needs none can be written by hand as `repo/` plus an oracle.
+
+`task.json` fields: `id`, `prompt`, `oracle` (a command) or `oracleFile` (a script beside the task), `setup`, `timeoutS`, `oracleTimeoutS`, `tags`.
 
 The margin by which fh must beat plain Qwen Code is set from the baseline run on your corpus (phase P0 in the roadmap), not guessed in advance.
 

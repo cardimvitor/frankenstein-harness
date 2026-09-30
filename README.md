@@ -8,9 +8,10 @@ What makes it different from a plain agent loop:
 - **Intake funnel.** Inspects the repo, asks at most five targeted questions, enriches the task with acceptance criteria, always shows a plan (a compact one for trivial tasks). `--auto` skips questions and plan and runs up to five verification rounds with different review checklists.
 - **Hidden skill system.** A deterministic gate (repo fingerprint + BM25, no LLM call) picks guidance from immutable built-in packs (senior personas, .NET Framework 4.8, .NET 8-10, React 18/19, Angular 17+, AngularJS 1.x, an Apple-HIG-inspired UI baseline) and from a per-user SQLite store of learned skills. Learned skills are project, stack or global scoped, validated as data-only, versioned, rolled back or quarantined automatically when they hurt verification results, and never shown to the user beyond activity notices. Your own `AGENTS.md` and `SKILL.md` files always win.
 - **Master/worker orchestration.** Independent subtasks with disjoint file ownership run in parallel under a governor that reads vLLM `/metrics` (KV-cache usage, queue depth), so parallel long contexts do not evict each other's prefix cache.
+- **Extensibility.** Hooks (`.fh/hooks.json`: SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, Stop), an MCP client (`.fh/mcp.json`, stdio and streamable HTTP), LSP diagnostics as a verifier input (only errors *new* relative to the base count), formatter checks on changed files, and a native Linux sandbox (Landlock + seccomp, no external binary). Project-level hooks, MCP servers and LSP commands only load after `fh trust`.
 - **Qwen/vLLM specifics.** Stable prompt prefix for prefix caching, edit-by-search/replace instead of file rewrites, thinking budget per step (`enable_thinking` on for planning, recovery and review, off for routine tool turns), streamed tool-call repair, `<tool_call>` recovery from content, think-leak detection, loop detection, structured-output fallback when guided decoding conflicts with the reasoning parser, retry/backoff, end-to-end cancellation (abort the request, kill the process tree).
 
-Status: implemented and covered by 79 automated tests against a mock vLLM server, plus a real-browser check of the web UI. **Not yet measured against your real vLLM**: launch vLLM with [`deploy/vllm/serve.sh`](deploy/vllm/serve.sh) (tuned profiles for an RTX 6000 Blackwell + Qwen 27B with MTP=3, see [docs/BLACKWELL.md](docs/BLACKWELL.md)), then run `scripts/vps-validate.sh` ([docs/VPS_VALIDATION_PROMPT.md](docs/VPS_VALIDATION_PROMPT.md)). What is left to build is planned in [docs/ROADMAP.md](docs/ROADMAP.md).
+Status: implemented and covered by 120 automated tests against a mock vLLM server (plus real pyright, TypeScript 7 language server, `openssl` mTLS and Landlock kernel tests), a real-browser check of the web UI and a pseudo-terminal check of the TUI. **Not yet measured against your real vLLM**: launch vLLM with [`deploy/vllm/serve.sh`](deploy/vllm/serve.sh) (tuned profiles for an RTX 6000 Blackwell + Qwen 27B with MTP=3, see [docs/BLACKWELL.md](docs/BLACKWELL.md)), then run `scripts/vps-validate.sh` ([docs/VPS_VALIDATION_PROMPT.md](docs/VPS_VALIDATION_PROMPT.md)). What is left to build is planned in [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## Build and run
 
@@ -69,14 +70,19 @@ Override what gets verified with `.fh/verify.json`: `[{"name":"build","cmd":"dot
 | `fh doctor` | connectivity and configuration check |
 | `fh validate-vllm` | measure MTP acceptance, prefix cache, tool-call reliability, long context, concurrency, cancellation |
 | `fh eval` | run the eval corpus, optionally against plain Qwen Code ([docs/EVAL.md](docs/EVAL.md)) |
-| `fh undo` | restore the working tree to the last per-task checkpoint |
+| `fh undo` / `fh keep` | restore the working tree to the last checkpoint / apply the last rejected patch anyway (both recorded as verifier signals in `fh stats`) |
+| `fh sessions`, `fh resume [id]` | list task sessions; continue an interrupted one with its stored plan and checkpoint (also `/resume` in the TUI, a button in the web UI) |
+| `fh trust [--revoke\|--list]` | allow project hooks, MCP servers and LSP commands in this repository |
+| `fh record <id> ...` | snapshot your own work as an eval task; the oracle must fail on the base and pass with the solution |
 | `fh activity`, `fh history [skill]` | skill activity notices; version history with hashes and diffs of learned skills |
 | `fh stats` | runtime statistics: verdicts, rounds, tokens per task, reviewer quality |
 | `fh auth set\|clear\|status` | keep the API key in the OS keychain (Linux `secret-tool`, macOS Keychain) instead of an env var |
 
 ## Platforms
 
-Linux and macOS are exercised. Windows is a target (PowerShell shell tool, `taskkill` process-tree kill, `%LOCALAPPDATA%` data dir) but untested here, and there is no Windows sandbox yet; the test suite shells out to POSIX `sh`. See [docs/SECURITY.md](docs/SECURITY.md).
+Linux is exercised locally and in CI; macOS in CI only. Windows compiles and has a Credential Manager path for the API key, but is untested beyond CI, has no sandbox, and the test suite still shells out to POSIX `sh`. See [docs/SECURITY.md](docs/SECURITY.md) and [docs/ROADMAP.md](docs/ROADMAP.md).
+
+Prebuilt binaries for six targets are produced by `.github/workflows/release.yml` when a `v*` tag is pushed; or `cargo install --git https://github.com/cardimvitor/frankstein-harness`.
 
 ## Development
 
@@ -93,7 +99,8 @@ PLAYWRIGHT_MODULE=$(npm root -g)/playwright node scripts/ui-smoke.mjs /tmp/fh-ui
 
 - [docs/DESIGN.md](docs/DESIGN.md): design, discovery findings, decisions and implementation status
 - [docs/VPS_VALIDATION_PROMPT.md](docs/VPS_VALIDATION_PROMPT.md): the one prompt to validate everything on the VPS
-- [docs/ROADMAP.md](docs/ROADMAP.md): everything still to do, with a plan per item
+- [docs/ROADMAP.md](docs/ROADMAP.md): what is left (VPS-blocked tuning, platform gaps, questions for you)
+- [docs/STUDY.md](docs/STUDY.md): the Codex/Hermes study (not done, and why)
 - [docs/BLACKWELL.md](docs/BLACKWELL.md), [docs/VERSIONS.md](docs/VERSIONS.md), [docs/EVAL.md](docs/EVAL.md), [docs/SECURITY.md](docs/SECURITY.md)
 
 ## License

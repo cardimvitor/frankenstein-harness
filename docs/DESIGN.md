@@ -286,7 +286,7 @@ Qwen Code: `prompts.ts` and tool descriptions, compaction service, `permissions/
 | vLLM validator: connectivity/auth/version, metrics availability, speed, tool-call reliability, stream vs non-stream equality at temperature 0, think leakage, structured output with thinking, MTP acceptance structured vs prose and per position, prefix cache, long-context needle, concurrency and KV calibration, cancellation, error handling | `src/validate/vllm.rs` | `tests/validate.rs` |
 | One-command VPS validation and grading against the success criteria | `scripts/vps-validate.sh`, `src/validate/summary.rs`, `docs/VPS_VALIDATION_PROMPT.md` | dry-run against `fh mock-server` |
 
-Test status: 62 automated tests (mock vLLM, no model needed), the web UI driven in headless Chromium in light and dark at desktop and phone width, and the full VPS script dry-run against the mock (exit 0, all criteria PASS).
+Test status (at the time of section 17): 62 automated tests (mock vLLM, no model needed), the web UI driven in headless Chromium in light and dark at desktop and phone width, and the full VPS script dry-run against the mock (exit 0, all criteria PASS).
 
 ### 17.3 Known gaps (not implemented or not verified)
 
@@ -313,3 +313,28 @@ Finished from the "partially done" and "not done" lists:
 - **vLLM deployment for RTX 6000 Blackwell**: `deploy/vllm/serve.sh` profiles, an A/B plan, and rule-based "Suggested vLLM and harness changes" in every validation summary.
 
 The remaining work, with a plan per item and the decisions needed from you, is `docs/ROADMAP.md`. The known-gaps list in 17.3 is superseded by it (terminal prompts are now single-key on unix; Codex CLI and Hermes studies are roadmap item Q).
+
+## 19. Roadmap items built (2026-09-30, third pass)
+
+Everything in `docs/ROADMAP.md` that did not need the VPS is now implemented and tested (120 automated tests). What each item is, where it lives, and what is still unproven:
+
+| Item | Where | Status |
+|---|---|---|
+| A. Orchestration quality | `src/orchestrator/master.rs`, `src/engine.rs` | Workers get a `request_edit` tool for files they do not own; the master routes requests to the owning worker, or to an extra worker for unowned files (one round). Failures in unowned files get one worker per directory. 60% of the task token budget is split across workers (`Stopped::Budget`). **Prompt tuning and the fan-out decision need the real model.** |
+| B. MCP client | `src/mcp/` | stdio and streamable-HTTP transports, `mcpServers` config shape, `${VAR}` and `${keychain:X}` expansion, tools as `mcp__server__tool`, mutating unless `readOnlyHint`, timeouts and cancellation, trust-gated project config. Not implemented: OAuth for remote servers, resources/prompts, server-initiated requests (answered with an empty result). |
+| C. Hooks | `src/hooks.rs`, `src/trust.rs` | SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, Stop; JSON on stdin; exit 2 blocks; per-hook timeout; project hooks only in a trusted workspace (`fh trust`). |
+| D. LSP diagnostics | `src/verify/lsp.rs` | Each changed file is opened with its base content, then its new content; only new errors count. Verified against real servers: pyright and the TypeScript 7 native server (`tsc --lsp`); mock servers cover push and pull. `csharp-ls` and `gopls` are wired but were **not run**. |
+| E. Session resume | `src/session/log.rs`, `src/engine.rs` | JSONL event log plus per-step message history; `fh resume`, `fh sessions`, `/resume` in the TUI, Resume button in the web UI. The stored plan and base checkpoint are reused; the checkpoint must still exist. |
+| F. Windows | `src/secrets.rs`, CI | Library and tests compile for `x86_64-pc-windows-gnu`; Credential Manager storage is implemented (PasswordVault through Windows PowerShell). **Not done:** job objects, restricted-token sandbox, portable test helpers. Windows behaviour is only as verified as the CI job says. |
+| G. Native sandbox | `src/util/landlock.rs`, `src/util/sandbox.rs` | Linux: Landlock (filesystem + TCP) and a seccomp deny-list, applied by re-executing the binary; no bubblewrap needed. Tested against the real kernel (write confinement, hidden credential directories, TCP block, refused syscalls). macOS Seatbelt is unchanged and unverified. |
+| H. Auth | `src/http.rs` | mTLS client identity, extra CA, and a token command (any OIDC/JWT CLI) with TTL cache and refresh after a 401. Tested against a real `openssl s_server` requiring client certificates. |
+| I. Embeddings | `src/skills/embed.rs` | Opt-in (`embeddingModel`); recall only: adds skills BM25 missed, vectors cached in the store. Off by default because it costs an HTTP call on the gate path. |
+| J. Thin-skill research | `src/skills/research.rs` | Read-only pass over README/docs/configs/neighbouring files; a proposal needs verbatim quotes that really occur in repo files; same validator and version history; once per skill per week. |
+| K. Telemetry | `src/session/signals.rs` | Opt-in local JSONL (`telemetry: true`), summarised by `fh stats`. |
+| L. LLM compaction | `src/agent/context.rs` | When the history exceeds the budget the middle of the conversation becomes one summary (thinking off); deterministic pruning remains the fallback. |
+| M. Arbiters and signals | `src/verify/format.rs`, `src/session/signals.rs` | Formatter check (rustfmt, ruff/black, prettier, gofmt, dotnet format) on changed files only, and only when the file was clean at the base. `fh undo` after a pass and `fh keep` of a rejected patch are recorded as false-negative / false-positive signals. |
+| N. Eval corpus | `scripts/swebench_to_tasks.py`, `src/eval/record.rs` | SWE-bench adapter (needs the repo's dependencies installed; no Docker) and `fh record` (oracle must fail on the base and pass with the solution). Task JSON gained `setup`, `oracleFile`, `oracleTimeoutS`. Terminal-Bench is **not** covered (its tasks need containers). |
+| O. Packs | `src/skills/builtin/` | Vue 3, Vue 2 (legacy), Spring Boot 3/4, Django, with detection and Maven/Gradle/`manage.py` verification. .NET 11 waits for GA. |
+| P. Web depth | `web/render.js`, `src/ui/server.rs` | File viewer (`/api/file`, secrets and key files withheld), per-file highlighted diffs (own tokenizer, no external script), sessions panel with resume, markdown tables/lists/headings with links shown as text. Verified in real Chromium. |
+| Q. Study | `docs/STUDY.md` | **Not done**: the Codex CLI source was not reachable from the build environment. |
+| R. Releases | `.github/workflows/release.yml`, `scripts/package.sh` | Six targets on a `v*` tag. The packaging script was run locally on the musl build; the workflow itself has not run. |
