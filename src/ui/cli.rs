@@ -143,6 +143,22 @@ async fn doctor(cfg: &Config, env: &Env) {
     }
     let (_, backend) = sandbox_for(&std::env::current_dir().unwrap_or_default(), true);
     if backend == "none" { bad("shell sandbox: none") } else { ok(&format!("shell sandbox: {backend}")) }
+    #[cfg(target_os = "linux")]
+    {
+        let abi = crate::util::landlock::abi();
+        if abi >= 1 { ok(&format!("Landlock ABI {abi} (native sandbox{})", if abi >= 4 { ", TCP confinement available" } else { ", no TCP confinement below ABI 4" })) } else { bad("Landlock unavailable on this kernel (bubblewrap is the fallback)") }
+    }
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let trusted = crate::trust::is_trusted(env, &cwd);
+    ok(&format!("workspace trust: {}", if trusted { "trusted (project hooks, MCP servers and LSP commands load)" } else { "not trusted (`fh trust` enables project hooks, MCP servers, LSP commands)" }));
+    let hooks = crate::hooks::Hooks::load(&cwd, env);
+    ok(&format!("hooks: {}{}", if hooks.is_empty() { "none active".to_string() } else { "active".to_string() }, if hooks.skipped_untrusted { " (project hooks skipped: untrusted)" } else { "" }));
+    let lsp: Vec<String> = crate::verify::lsp::load_specs(&cwd, env).into_iter().map(|s| s.name).collect();
+    ok(&format!("language servers: {}", if lsp.is_empty() { "none found for this repository (build/test output decides)".to_string() } else { lsp.join(", ") }));
+    let (mcp, notes) = crate::mcp::load_tools(&cwd, env).await;
+    ok(&format!("MCP: {} tool(s){}", mcp.len(), if notes.is_empty() { String::new() } else { format!(" — {}", notes.join("; ")) }));
+    if !cfg.client_cert.is_empty() { ok(&format!("mTLS client certificate: {}", cfg.client_cert)); }
+    if !cfg.auth_token_cmd.is_empty() { ok("token command configured (refreshed after a 401)"); }
     ok(&format!("{} {}", std::env::consts::OS, std::env::consts::ARCH));
 }
 

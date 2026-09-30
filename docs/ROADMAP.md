@@ -33,7 +33,7 @@ Nothing below can be settled by reading code; each needs `scripts/vps-validate.s
 ## 3. Small follow-ups I would do next
 
 1. Windows: job objects for process-tree kill and memory limits; make the test helpers portable so the Windows job can become blocking.
-2. `fh doctor` should report Landlock ABI, the language servers found, formatter availability, hooks and MCP servers loaded, and trust status.
+2. (done) `fh doctor` reports Landlock ABI, trust, hooks, language servers and MCP tools.
 3. An `fh mcp list` and `fh hooks list` for inspecting what is active.
 4. Per-repo `.fh/config.json` schema documentation (the options are listed in README and SECURITY only in part).
 5. Web UI: search in the file viewer, keyboard navigation in the tree.
