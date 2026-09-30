@@ -34,6 +34,7 @@ pub struct MasterOptions {
     pub notice: Option<Arc<dyn Fn(&str) + Send + Sync>>,
     pub wrap_shell: Option<ShellWrap>,
     pub confirm: Option<crate::agent::ConfirmFn>,
+    pub extra_tools: Vec<crate::tools::ToolRef>,
 }
 
 fn worker_task(s: &Subtask, all: &[Subtask], goal: &str) -> String {
@@ -73,6 +74,7 @@ pub async fn run_workers(goal: &str, subtasks: &[Subtask], o: &MasterOptions) ->
                     ao.context_window = o.context_window;
                     ao.wrap_shell = o.wrap_shell.clone();
                     ao.confirm = o.confirm.clone();
+                    ao.tools.extend(o.extra_tools.iter().cloned());
                     let r = run_agent(&worker_task(s, subtasks, goal), ao).await;
                     WorkerResult { id: s.id.clone(), summary: if r.final_text.is_empty() { r.error.clone().unwrap_or_default() } else { r.final_text }, touched: r.touched, stopped: r.stopped, steps: r.steps }
                 })

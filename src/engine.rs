@@ -237,6 +237,7 @@ pub struct Engine {
     pub llm: LlmClient,
     pub store: SkillStore,
     pub hooks: Arc<crate::hooks::Hooks>,
+    mcp: tokio::sync::OnceCell<Vec<crate::tools::ToolRef>>,
     started: std::sync::atomic::AtomicBool,
     pending: Mutex<Vec<tokio::task::JoinHandle<()>>>,
 }
@@ -246,7 +247,7 @@ impl Engine {
         let llm = LlmClient::new(cfg.clone(), env.clone());
         let cwd: PathBuf = cwd.into();
         let hooks = Arc::new(crate::hooks::Hooks::load(&cwd, &env));
-        Engine { cfg, env, io, cwd, llm, store, hooks, started: std::sync::atomic::AtomicBool::new(false), pending: Mutex::new(vec![]) }
+        Engine { cfg, env, io, cwd, llm, store, hooks, mcp: tokio::sync::OnceCell::new(), started: std::sync::atomic::AtomicBool::new(false), pending: Mutex::new(vec![]) }
     }
 
     /// Wait for post-delivery background work (skill learning) so short-lived CLI runs do not drop it.
@@ -262,6 +263,9 @@ impl Engine {
         ao.context = Some(context.to_string());
         ao.context_window = self.cfg.context_window;
         ao.wrap_shell = wrap.clone();
+        if let Some(t) = self.mcp.get() {
+            ao.tools.extend(t.iter().cloned());
+        }
         ao.hooks = if self.hooks.is_empty() { None } else { Some(self.hooks.clone()) };
         let io = self.io.clone();
         let (io1, io2, io3, io4, io5) = (io.clone(), io.clone(), io.clone(), io.clone(), io.clone());
@@ -307,6 +311,13 @@ impl Engine {
             for n in self.hooks.fire(crate::hooks::HookEvent::SessionStart, json!({})).await.notes {
                 io.notice(NoticeKind::Info, &n);
             }
+        }
+        if self.mcp.get().is_none() {
+            let (tools, notes) = crate::mcp::load_tools(&self.cwd, &self.env).await;
+            for n in notes {
+                io.notice(NoticeKind::Info, &n);
+            }
+            let _ = self.mcp.set(tools);
         }
         let up = self.hooks.fire(crate::hooks::HookEvent::UserPromptSubmit, json!({"prompt": task})).await;
         if let Some(why) = up.blocked {
@@ -489,6 +500,7 @@ impl Engine {
                 notice: Some(Arc::new(move |m| io2.notice(NoticeKind::Info, m))),
                 wrap_shell: wrap.clone(),
                 confirm: self.agent_options(&o, &context, &wrap).confirm,
+                extra_tools: self.mcp.get().cloned().unwrap_or_default(),
             };
             workers = run_workers(&plan.enriched, &plan.subtasks, &mo).await;
         } else {
