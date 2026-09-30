@@ -34,10 +34,27 @@ pub fn hard_deny(command: &str) -> Option<&'static str> {
 }
 
 pub fn decide(mode: Mode, tool: &dyn Tool, args: &Value) -> Decision {
+    decide_with_rules(mode, tool, args, None)
+}
+
+/// `decide` plus the user's command rules: forbid refuses in every mode, prompt asks (except plan mode, which refuses),
+/// allow skips the approval question (plan mode still only runs read-only commands).
+pub fn decide_with_rules(mode: Mode, tool: &dyn Tool, args: &Value, rules: Option<&super::rules::Rules>) -> Decision {
     if tool.spec().name == "bash" {
         let cmd = args.get("command").and_then(|v| v.as_str()).unwrap_or("");
         if let Some(why) = hard_deny(cmd) {
             return Decision::Deny { reason: format!("blocked: {why}"), ask: false };
+        }
+        if let Some((d, why)) = rules.and_then(|r| r.evaluate(cmd)) {
+            use super::rules::RuleDecision as R;
+            let why = why.map(|w| format!(": {w}")).unwrap_or_default();
+            match (d, mode) {
+                (R::Forbid, _) => return Decision::Deny { reason: format!("blocked by a command rule{why}"), ask: false },
+                (R::Prompt, Mode::Plan) => return Decision::Deny { reason: format!("plan mode is read-only; this command needs approval{why}"), ask: false },
+                (R::Prompt, _) => return Decision::Deny { reason: format!("command rule requires approval{why}"), ask: true },
+                (R::Allow, m) if m != Mode::Plan => return Decision::Allow,
+                _ => {}
+            }
         }
         if mode == Mode::Plan {
             return if SAFE_SHELL.is_match(cmd) { Decision::Allow } else { Decision::Deny { reason: "plan mode is read-only; only read-only shell commands are allowed".into(), ask: false } };

@@ -226,3 +226,55 @@ async fn multi_edit_is_atomic_and_syntax_errors_are_reported_in_the_same_turn() 
     let r = edit.execute(&json!({"path": "n.txt", "old_text": "hello", "new_text": "bye"}), &ctx).await;
     assert_eq!(r.output, "edited n.txt");
 }
+
+#[tokio::test]
+async fn command_rules_forbid_prompt_and_allow_in_the_agent_loop() {
+    use fh::agent::rules::Rules;
+    let d = tempfile::tempdir().unwrap();
+    let rules = Arc::new(Rules::from_json(&json!({"rules": [
+        {"pattern": ["echo", "ok"], "decision": "allow"},
+        {"pattern": ["touch", "guarded"], "decision": "prompt", "justification": "test"},
+        {"pattern": ["touch", "never"], "decision": "forbid", "justification": "no way"}
+    ]}), true, "t"));
+    let run = |mode: Mode, cmd: &'static str, approve: bool| {
+        let (d, rules) = (d.path().to_path_buf(), rules.clone());
+        async move {
+            let m = testkit::start(0, None).await;
+            m.push(Scripted::call("bash", json!({"command": cmd})));
+            m.push(Scripted::text("done"));
+            let asked = Arc::new(Mutex::new(0));
+            let a2 = asked.clone();
+            let mut o = AgentOptions::new(LlmClient::new(cfg(&m.url), Env::new()), &d, mode);
+            o.rules = Some(rules);
+            o.confirm = Some(Arc::new(move |_, _| { *a2.lock().unwrap() += 1; Box::pin(async move { approve }) }));
+            run_agent("t", o).await;
+            let last = m.requests()[1]["messages"].as_array().unwrap().last().unwrap()["content"].as_str().unwrap().to_string();
+            let n = *asked.lock().unwrap();
+            (last, n)
+        }
+    };
+    // allow rule: Ask mode runs it without asking
+    let (out, asked) = run(Mode::Ask, "echo ok", false).await;
+    assert!(out.contains("ok") && asked == 0, "{out} {asked}");
+    // a command no rule speaks for still asks
+    let (_, asked) = run(Mode::Ask, "make build", true).await;
+    assert_eq!(asked, 1);
+    // prompt rule asks even in yolo; approving runs it
+    let (out, asked) = run(Mode::Yolo, "touch guarded", true).await;
+    assert!(asked == 1 && d.path().join("guarded").exists(), "{out}");
+    // forbid rule refuses in every mode, never asks, and gives the reason
+    let (out, asked) = run(Mode::Yolo, "touch never", true).await;
+    assert!(asked == 0 && out.contains("blocked by a command rule") && out.contains("no way") && !d.path().join("never").exists(), "{out}");
+}
+
+#[tokio::test]
+async fn an_empty_model_reply_is_nudged_instead_of_accepted() {
+    let d = tempfile::tempdir().unwrap();
+    let m = testkit::start(0, None).await;
+    m.push(Scripted::text(""));
+    m.push(Scripted::text("Actual answer."));
+    let r = run_agent("t", AgentOptions::new(LlmClient::new(cfg(&m.url), Env::new()), d.path(), Mode::Yolo)).await;
+    assert_eq!(r.final_text, "Actual answer.");
+    let last = m.requests()[1]["messages"].as_array().unwrap().last().unwrap()["content"].as_str().unwrap().to_string();
+    assert!(last.contains("reply was empty"));
+}

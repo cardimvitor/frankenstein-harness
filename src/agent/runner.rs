@@ -1,5 +1,5 @@
 use super::context::{compact, est_tokens, llm_compact};
-use super::permissions::{decide, Decision};
+use super::permissions::{decide_with_rules, Decision};
 use super::prompt::SYSTEM_PROMPT;
 use crate::config::{redact, Env};
 use crate::llm::client::{Callback, ChatOptions, LlmClient};
@@ -47,6 +47,7 @@ pub struct AgentOptions {
     pub context_window: usize,
     pub wrap_shell: Option<ShellWrap>,
     pub hooks: Option<Arc<crate::hooks::Hooks>>,
+    pub rules: Option<Arc<super::rules::Rules>>,
     /// stop (Stopped::Budget) once this many prompt+completion tokens were used by this agent
     pub token_budget: Option<u64>,
     /// summarize old steps with a thinking-off call when the history exceeds the budget (before deterministic pruning)
@@ -55,7 +56,7 @@ pub struct AgentOptions {
 
 impl AgentOptions {
     pub fn new(llm: LlmClient, cwd: impl Into<PathBuf>, mode: Mode) -> Self {
-        AgentOptions { llm, cwd: cwd.into(), mode, thinking: None, max_steps: 40, cancel: None, tools: all_tools(), owned_globs: None, confirm: None, events: Events::default(), context: None, history: None, context_window: 131072, wrap_shell: None, hooks: None, token_budget: None, llm_compaction: false }
+        AgentOptions { llm, cwd: cwd.into(), mode, thinking: None, max_steps: 40, cancel: None, tools: all_tools(), owned_globs: None, confirm: None, events: Events::default(), context: None, history: None, context_window: 131072, wrap_shell: None, hooks: None, rules: None, token_budget: None, llm_compaction: false }
     }
 }
 
@@ -118,6 +119,7 @@ pub async fn run_agent(task: &str, o: AgentOptions) -> AgentResult {
     let mut recent: Vec<String> = Vec::new();
     let (mut tool_calls, mut failed_tools, mut consecutive_fail) = (0usize, 0usize, 0usize);
     let mut tokens_used: u64 = 0;
+    let mut empty_nudges = 0usize;
     let mut final_text = String::new();
     let mut stopped = Stopped::MaxSteps;
     let mut error: Option<String> = None;
@@ -184,6 +186,12 @@ pub async fn run_agent(task: &str, o: AgentOptions) -> AgentResult {
                 messages.push(Message::user("Your reply was cut off. Continue briefly."));
                 continue;
             }
+            // an empty reply with nothing done is a model hiccup, not an answer: nudge twice, then accept it
+            if r.content.trim().is_empty() && tool_calls == 0 && empty_nudges < 2 {
+                empty_nudges += 1;
+                messages.push(Message::user("Your reply was empty. Use the tools to do the task, or state the final result."));
+                continue;
+            }
             final_text = r.content;
             stopped = Stopped::Done;
             break;
@@ -216,7 +224,7 @@ pub async fn run_agent(task: &str, o: AgentOptions) -> AgentResult {
                 if call.parse == ParseState::Malformed {
                     return ToolResult::err("tool arguments were not valid JSON; resend the call with valid JSON arguments");
                 }
-                match decide(o.mode, tool.as_ref(), &call.args) {
+                match decide_with_rules(o.mode, tool.as_ref(), &call.args, o.rules.as_deref()) {
                     Decision::Allow => {}
                     Decision::Deny { reason, ask } => {
                         let approved = if ask { match &o.confirm { Some(c) => c(call.name.clone(), call.args.clone()).await, None => false } } else { false };

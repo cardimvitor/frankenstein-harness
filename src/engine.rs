@@ -262,6 +262,7 @@ pub struct Engine {
     pub llm: LlmClient,
     pub store: SkillStore,
     pub hooks: Arc<crate::hooks::Hooks>,
+    pub rules: Arc<crate::agent::rules::Rules>,
     mcp: tokio::sync::OnceCell<Vec<crate::tools::ToolRef>>,
     lsp: tokio::sync::OnceCell<Option<crate::verify::rounds::LspHandle>>,
     started: std::sync::atomic::AtomicBool,
@@ -274,7 +275,8 @@ impl Engine {
         let llm = LlmClient::new(cfg.clone(), env.clone());
         let cwd: PathBuf = cwd.into();
         let hooks = Arc::new(crate::hooks::Hooks::load(&cwd, &env));
-        Engine { cfg, env, io, cwd, llm, store, hooks, mcp: tokio::sync::OnceCell::new(), lsp: tokio::sync::OnceCell::new(), started: std::sync::atomic::AtomicBool::new(false), session: Mutex::new(None), pending: Mutex::new(vec![]) }
+        let rules = Arc::new(crate::agent::rules::Rules::load(&cwd, &env));
+        Engine { cfg, env, io, cwd, llm, store, hooks, rules, mcp: tokio::sync::OnceCell::new(), lsp: tokio::sync::OnceCell::new(), started: std::sync::atomic::AtomicBool::new(false), session: Mutex::new(None), pending: Mutex::new(vec![]) }
     }
 
     /// Language servers for this workspace, started once and kept warm (None when disabled or none applies).
@@ -313,6 +315,7 @@ impl Engine {
         if let Some(t) = self.mcp.get() {
             ao.tools.extend(t.iter().cloned());
         }
+        ao.rules = if self.rules.is_empty() { None } else { Some(self.rules.clone()) };
         ao.hooks = if self.hooks.is_empty() { None } else { Some(self.hooks.clone()) };
         let io = self.io.clone();
         let (io1, io2, io3, io4, io5) = (io.clone(), io.clone(), io.clone(), io.clone(), io.clone());
@@ -361,6 +364,11 @@ impl Engine {
             }};
         }
 
+        if !self.started.load(std::sync::atomic::Ordering::Relaxed) {
+            for p in &self.rules.problems {
+                io.notice(NoticeKind::Warn, p);
+            }
+        }
         if self.hooks.skipped_untrusted && !self.started.load(std::sync::atomic::Ordering::Relaxed) {
             io.notice(NoticeKind::Warn, "project hooks (.fh/hooks.json) were skipped: this workspace is not trusted (run `fh trust`)");
         }
