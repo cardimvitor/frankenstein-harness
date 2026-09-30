@@ -1,6 +1,6 @@
 # Frankenstein Harness: planning and discovery
 
-Status: draft for review. Phase produces research and design only; no harness code yet.
+Status: design plus a working implementation (section 17). The vLLM-dependent parts are implemented but not yet measured on the real server.
 
 ## 1. Goal and scope
 
@@ -249,3 +249,48 @@ Fork rules that keep the "best of both worlds" real and measurable:
 ### 16.6 Still to read (next discovery pass)
 
 Qwen Code: `prompts.ts` and tool descriptions, compaction service, `permissions/`, `daemon`/web-shell auth model. dsh: `system-prompt`, `approval`, `skill` internals, web app security posture (Host/Origin checks). Codex CLI (Rust) sandbox and TUI; Hermes anti-patterns; version sources and licenses for .NET/React/Angular docs; measurements on the user's vLLM (need endpoint access, which this cloud session does not have).
+
+## 17. Implementation status (2026-09-30)
+
+### 17.1 Decision update: clean-room native build, not a fork
+
+Section 16.4 recommended a hard fork of Qwen Code. During implementation this was replaced by a **clean-room native implementation** in a small TypeScript codebase (Node >= 22.18, no runtime dependencies, no build step):
+
+- A fork means ~10k files (channels, mobile, desktop, media, IM integrations) that could not be stripped and verified in one pass, and a daily-moving upstream.
+- The design here (verification gates, hidden outcome-scored skills, file-ownership orchestration) lives in the core loop either way, so nothing was lost by not inheriting Qwen Code's loop.
+- Qwen Code and dsh were read as design references only; **no code was copied**, so the project is pure MIT and there is no Apache 2.0 NOTICE obligation.
+- Trade-off accepted: Qwen Code features that were not rebuilt (LSP, MCP, hooks, Windows sandbox, undo UI beyond `fh undo`, IDE integrations) are absent. See 17.3.
+
+### 17.2 What is implemented and where
+
+| Design item | Code | Verified by |
+|---|---|---|
+| vLLM client: streaming, reasoning_content, streamed tool-call assembly, repair of truncated/fenced/think-leaked JSON, `<tool_call>` recovery, retry/backoff, abort, per-step thinking toggle, Qwen sampling defaults | `src/llm/` | `test/llm.test.ts` |
+| `/metrics` parsing: KV usage, queue depth, prefix-cache hits, MTP acceptance overall and per position | `src/llm/metrics.ts` | `test/llm.test.ts` |
+| Tools: read, list, grep, search/replace edit (exact then whitespace-tolerant), create-only write, bash (timeout, cancel kills the process tree, scrubbed env) | `src/tools/`, `src/util/proc.ts` | `test/agent.test.ts` |
+| Permission modes plan/ask/auto-edit/yolo with a hard deny list; workspace and symlink confinement; file ownership | `src/agent/permissions.ts`, `src/util/paths.ts` | `test/agent.test.ts` |
+| Agent loop: parallel read-only calls, loop detection, deterministic context compaction, stable prompt prefix, per-step thinking budget | `src/agent/` | `test/agent.test.ts`, `test/engine.test.ts` |
+| Verification rounds: build/test/lint/type-check autodetect (.NET, npm/pnpm/yarn, pytest, go, cargo, `.fh/verify.json`), diff scope, secret scan, deleted/skipped tests, conflict markers; LLM reviewer with mandatory verifiable `file:line` + quote; "unverified" when nothing runnable; rollback on fail with rejected patch saved | `src/verify/`, `src/session/checkpoint.ts` | `test/verify.test.ts`, `test/engine.test.ts` |
+| Repo fingerprint: .NET Framework/.NET versions, React/Angular/AngularJS versions, Python/Go/Rust, project id, similarity | `src/fingerprint.ts` | `test/verify.test.ts` |
+| Intake funnel: repo inspection, <= 5 questions, enriched prompt, acceptance criteria, plan (one-key for trivial), auto mode without questions, plan feedback | `src/funnel/intake.ts`, `src/engine.ts`, `src/ui/term.ts` | `test/engine.test.ts` |
+| Skill gate: fingerprint + BM25, zero LLM calls, p50 well under 50 ms, ambiguity resolved inside the planner output | `src/skills/gate.ts` | `test/skills.test.ts` |
+| Skill store: SQLite in the OS user data dir, immutable built-ins, versions with diffs, rollback, quarantine, activity log, scope classification and promotion, data-only validation, cross-project reuse offer (names and summaries only, copy with origin, none in auto mode), A/B quality police | `src/skills/` | `test/skills.test.ts` |
+| Built-in packs: 8 senior personas, .NET Framework 4.8, .NET 8-10, React 18/19, Angular 17+, AngularJS 1.x, HIG UI baseline | `src/skills/builtin/` | `test/skills.test.ts` |
+| User `AGENTS.md`, `FRANKENSTEIN.md`, `.fh/skills/*/SKILL.md` (plus read-only `.qwen`, `.claude`, `.agents` skills) override internal skills | `src/skills/usercfg.ts` | `test/skills.test.ts` |
+| Master/worker: planner-declared subtasks, disjoint-ownership waves, dependency ordering, serial fallback, per-worker ownership enforced by the write tool, failures routed to the owning worker, governor from vLLM metrics | `src/orchestrator/`, `src/engine.ts` | `test/orchestrator.test.ts`, `test/engine.test.ts` |
+| Post-delivery skill mining (rate-limited, verified-pass only), outcome tracking, quarantine and promotion passes | `src/skills/miner.ts`, `src/engine.ts` | `test/engine.test.ts` |
+| Local web UI: 127.0.0.1, Host/Origin checks, one-time code to HttpOnly SameSite=Strict cookie, strict CSP, no innerHTML, redaction of secrets including across stream chunks; chat, streamed thinking, plan and question cards, tool output, diffs, skill notices, verification status, mode switch | `src/ui/server.ts`, `src/ui/web/` | `test/web.test.ts`, live smoke in `scripts/vps-validate.sh` |
+| Eval harness: built-in smoke corpus, task directories, fh and plain Qwen Code runners, pass/time/malformed/verifier metrics | `src/eval/` | `test/engine.test.ts` |
+| vLLM validator: connectivity/auth, metrics availability, speed, tool-call reliability, stream vs non-stream equality at temperature 0, think leakage, structured output with thinking, MTP acceptance structured vs prose and per position, prefix cache stable vs variable-first, long-context needle, concurrency and KV calibration, cancellation, error handling | `src/validate/vllm.ts` | `test/validate.test.ts` |
+| One-command VPS validation and summary against the success criteria | `scripts/vps-validate.sh`, `scripts/summarize.ts`, `docs/VPS_VALIDATION_PROMPT.md` | dry-run against a mock server |
+
+Test status: 57 automated tests (mock vLLM, no model needed), typecheck clean.
+
+### 17.3 Known gaps (not implemented or not verified)
+
+- **Nothing has been run against the real Qwen3.8 27B / vLLM MTP=3 setup.** Sampling defaults, tool-call behaviour under MTP, acceptance rates, prefix-cache effectiveness and the concurrency limit are placeholders until `scripts/vps-validate.sh` runs on the VPS.
+- Windows: PowerShell shell tool and `taskkill` tree-kill are coded but untested; no Windows sandbox. macOS Seatbelt and Linux bubblewrap are implemented but `--sandbox` was not exercised (no bwrap in the build environment).
+- Not built: MCP client, LSP diagnostics as a verifier input (compiler/test output is used instead), hooks, session resume, LLM-based context summarization (deterministic pruning only), opt-in telemetry, mTLS/OIDC auth, .NET 11 pack (not released), and version packs beyond the seven listed.
+- Reviewer false-positive rate can only be measured with an oracle (the eval does this); the built-in corpus is five smoke tasks, not SWE-bench or Terminal-Bench.
+- The web UI has not been driven in a real browser in this environment; its security controls are tested at the HTTP level and the client code avoids `innerHTML` by construction.
+- Rust spike: not started; the measurements from the VPS run decide whether it is worth doing.

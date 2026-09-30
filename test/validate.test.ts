@@ -23,6 +23,7 @@ test('validate-vllm runs every probe against a scripted server and writes json+m
     const key = text.slice(0, 200); queries += 100; if (seen.has(key)) hits += 90; seen.add(key);
     const needle = text.match(/passphrase is (KX-\d+)/)?.[1];
     if (needle) return { content: needle };
+    if (req.response_format?.json_schema?.schema?.properties?.verdict) return { content: '{"verdict":"pass","findings":[]}' };
     if (/Read the file/.test(text)) return { tool_calls: [{ name: 'read_file', args: { path: 'src/app.ts' } }] };
     if (/two-line snippet/.test(text)) return { tool_calls: [{ name: 'edit', args: { path: 'lib/util.js', old_text: 'const a = 1;\nconst b = "two";', new_text: 'const a = 10;\nconst b = "three"; // updated' } }] };
     if (/Run this exact shell/.test(text)) return { tool_calls: [{ name: 'bash', args: { command: 'grep -rn "TODO(\\"x\\")" src | head -5' } }] };
@@ -45,6 +46,7 @@ test('validate-vllm runs every probe against a scripted server and writes json+m
   assert.match(by['tool-call reliability'].summary, /malformed 0\.0%/);
   assert.equal(by['tool-call reliability'].data.right, by['tool-call reliability'].data.total);
   assert.equal(by['thinking must not leak into tool arguments or content'].status, 'pass');
+  assert.equal(by['structured JSON output with thinking on'].status, 'pass');
   assert.equal(by['streamed vs non-streamed tool call'].status, 'pass');
   assert.match(by['MTP acceptance'].summary, /66\.7%/); // 20/30 accepted
   assert.equal(by['prefix cache'].status, 'pass');

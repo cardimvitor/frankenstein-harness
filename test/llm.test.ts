@@ -116,3 +116,17 @@ test('metrics parse and delta', () => {
   assert.equal(d.meanAcceptedPerDraft, 1.8);
   assert.equal(d.perPositionAcceptance![0], 0.9);
 });
+
+test('json(): falls back to an unconstrained thinking-off call when the constrained call yields no JSON', async () => {
+  const m = await startMock();
+  m.queue.push({ reasoning: 'long thoughts', content: '' }, { content: '{"a":1}' });
+  const c = new LlmClient(cfgFor(m.url));
+  const r = await c.json({ messages: [{ role: 'user', content: 'give json' }], thinking: 'high', jsonSchema: { type: 'object', properties: { a: { type: 'integer' } } } });
+  assert.deepEqual(r.value, { a: 1 }); assert.equal(r.fallback, true);
+  assert.equal(m.requests[1].response_format, undefined); assert.equal(m.requests[1].chat_template_kwargs.enable_thinking, false);
+  assert.match(m.requests[1].messages.at(-1).content, /JSON schema/);
+  m.queue.push({ content: '{"b":2}' });
+  const r2 = await c.json({ messages: [{ role: 'user', content: 'x' }], thinking: 'off' });
+  assert.equal(r2.fallback, false); assert.deepEqual(r2.value, { b: 2 });
+  await m.close();
+});

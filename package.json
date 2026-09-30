@@ -7,7 +7,7 @@
   "engines": { "node": ">=22.18" },
   "bin": { "fh": "bin/fh.ts" },
   "scripts": {
-    "test": "node --disable-warning=ExperimentalWarning --test test/*.test.ts",
+    "test": "node --disable-warning=ExperimentalWarning --test --test-timeout=120000 test/*.test.ts",
     "typecheck": "tsc -p tsconfig.json",
     "fh": "node --disable-warning=ExperimentalWarning bin/fh.ts"
   },

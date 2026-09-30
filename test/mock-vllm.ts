@@ -24,7 +24,7 @@ export interface MockServer {
 const readBody = (req: IncomingMessage) =>
   new Promise<string>((res) => { let b = ''; req.on('data', (c) => (b += c)); req.on('end', () => res(b)); });
 
-export async function startMock(opts: { apiKey?: string } = {}): Promise<MockServer> {
+export async function startMock(opts: { apiKey?: string; port?: number } = {}): Promise<MockServer> {
   const m: MockServer = { url: '', requests: [], queue: [], metrics: '', close: async () => {} };
   const server: Server = createServer(async (req, res) => {
     if (opts.apiKey && req.headers.authorization !== `Bearer ${opts.apiKey}`) {
@@ -66,7 +66,7 @@ export async function startMock(opts: { apiKey?: string } = {}): Promise<MockSer
     }
     res.writeHead(404).end();
   });
-  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+  await new Promise<void>((r) => server.listen(opts.port ?? 0, '127.0.0.1', r));
   m.url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
   m.close = () => new Promise((r) => { server.closeAllConnections(); server.close(() => r()); });
   return m;

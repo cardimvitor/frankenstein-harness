@@ -120,6 +120,17 @@ export async function validateVllm(cfg: Config, o: ValidateOptions): Promise<num
     return { status: st, summary: `calls ${pct(stat.called / stat.total)}, right tool ${pct(stat.right / stat.total)}, args valid ${pct(stat.argsOk / stat.total)}, server-clean ${pct(stat.ok / stat.total)}, repaired ${pct(stat.repaired / stat.total)}, malformed ${pct(malformedRate)} (target <1%), think-leak ${stat.leak}`, data: { ...stat, malformedRate, repairedRate, perScenario } };
   });
 
+  await add('structured JSON output with thinking on (planner/reviewer path)', async () => {
+    const schema = { type: 'object', properties: { verdict: { type: 'string', enum: ['pass', 'fail'] }, findings: { type: 'array', items: { type: 'string' } } }, required: ['verdict', 'findings'] };
+    const n = o.quick ? 3 : 6;
+    let direct = 0, viaFallback = 0, failed = 0;
+    for (let i = 0; i < n; i++) {
+      const r = await llm.json<{ verdict?: string }>({ messages: [{ role: 'user', content: `Review this change and answer with a verdict and findings: replaced "<" with "<=" in a loop bound (case ${i}).` }], thinking: 'high', maxTokens: 2500, jsonSchema: schema });
+      if (r.value && (r.value.verdict === 'pass' || r.value.verdict === 'fail')) { if (r.fallback) viaFallback++; else direct++; } else failed++;
+    }
+    return { status: failed ? 'fail' : viaFallback ? 'warn' : 'pass', summary: `${direct}/${n} valid JSON directly, ${viaFallback}/${n} only via the thinking-off fallback, ${failed}/${n} failed${viaFallback ? ' (guided decoding and the reasoning parser conflict on this vLLM version; the harness compensates but the planner/reviewer lose thinking)' : ''}`, data: { direct, viaFallback, failed, n } };
+  });
+
   await add('streamed vs non-streamed tool call (temperature 0, MTP correctness)', async () => {
     let same = 0, n = 0;
     for (const sc of TOOL_SCENARIOS.slice(0, o.quick ? 2 : 5)) {

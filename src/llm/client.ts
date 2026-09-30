@@ -235,10 +235,22 @@ export class LlmClient {
     return { content, reasoning, toolCalls, finish, usage, ttftMs: ttft < 0 ? totalMs : ttft, totalMs, repaired, malformed, thinkLeak };
   }
 
-  /** Single structured (JSON) call, parsed with repair. Never streams to the UI. */
-  async json<T = Record<string, unknown>>(o: ChatOptions): Promise<{ value: T | undefined; raw: LlmResult }> {
-    const raw = await this.chat(o);
-    const p = parseArgs(raw.content);
-    return { value: p.ok ? (p.value as T) : undefined, raw };
+  /**
+   * Structured (JSON) call, parsed with repair. Some vLLM versions apply guided decoding from the first token, which
+   * fights the reasoning block; if the constrained call yields no usable JSON, retry once without the schema and with
+   * thinking off, asking for JSON in the prompt.
+   */
+  async json<T = Record<string, unknown>>(o: ChatOptions): Promise<{ value: T | undefined; raw: LlmResult; fallback: boolean }> {
+    const parse = (t: string) => (t.trim() ? parseArgs(t) : { ok: false as const, value: undefined, repaired: false, thinkLeak: false });
+    let raw = await this.chat(o);
+    let p = parse(raw.content);
+    if (!p.ok && (o.jsonSchema || (o.thinking && o.thinking !== 'off'))) {
+      const hint = o.jsonSchema ? `\n\nReply with ONLY a JSON object matching this JSON schema, no prose and no code fences:\n${JSON.stringify(o.jsonSchema)}` : '\n\nReply with ONLY a JSON object, no prose.';
+      const msgs = o.messages.map((m, i) => (i === o.messages.length - 1 && m.role === 'user' ? { ...m, content: `${m.content ?? ''}${hint}` } : m));
+      raw = await this.chat({ ...o, messages: msgs, jsonSchema: undefined, thinking: 'off' });
+      p = parse(raw.content);
+      return { value: p.ok ? (p.value as T) : undefined, raw, fallback: true };
+    }
+    return { value: p.ok ? (p.value as T) : undefined, raw, fallback: false };
   }
 }

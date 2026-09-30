@@ -64,7 +64,7 @@ step "vLLM measurements (this is the long part)"
 $FH validate-vllm $QUICK --out "$OUT" 2>&1 | tee "$OUT/validate-vllm.log"
 [ "${PIPESTATUS[0]}" -eq 0 ] || FAILED+=("validate-vllm")
 
-step "eval: Frankenstein Harness${BASELINE:+ vs plain Qwen Code} (repeat $REPEAT)"
+step "eval: Frankenstein Harness$([ "$BASELINE" = 1 ] && echo " vs plain Qwen Code") (repeat $REPEAT)"
 RUNNER=fh
 if [ "$BASELINE" = 1 ]; then
   if command -v qwen >/dev/null 2>&1 || npm install -g @qwen-code/qwen-code --loglevel=error >"$OUT/qwen-install.log" 2>&1; then
@@ -86,7 +86,9 @@ for _ in $(seq 1 30); do curl -s -o /dev/null "http://127.0.0.1:$PORT/" && break
   echo "forged Host -> $(curl -s -o /dev/null -w '%{http_code}' -H 'Host: evil.example' "http://127.0.0.1:$PORT/") (expect 403)"
   echo "API without cookie -> $(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/api/state") (expect 401)"
   echo "foreign Origin POST -> $(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -H 'X-FH: 1' -H 'Origin: http://evil.example' -d '{}' "http://127.0.0.1:$PORT/api/auth") (expect 403)"
-  echo "bound to loopback only: $(ss -ltn 2>/dev/null | grep ":$PORT " | awk '{print $4}' | tr '\n' ' ')"
+  if command -v ss >/dev/null 2>&1; then echo "listening on: $(ss -ltn 2>/dev/null | grep ":$PORT " | awk '{print $4}' | tr '\n' ' ') (expect 127.0.0.1 only)"
+  elif command -v lsof >/dev/null 2>&1; then echo "listening on: $(lsof -nP -iTCP:$PORT -sTCP:LISTEN 2>/dev/null | awk 'NR>1{print $9}' | tr '\n' ' ') (expect 127.0.0.1 only)"
+  else echo "listening on: (ss/lsof not available, skipped)"; fi
 } | tee "$OUT/web-smoke.txt"
 kill "$SRV" 2>/dev/null; wait "$SRV" 2>/dev/null
 
