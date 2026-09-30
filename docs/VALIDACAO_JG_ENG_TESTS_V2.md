@@ -5,12 +5,12 @@ Cole este documento inteiro numa sessão do Claude Code com terminal na máquina
 Esta versão substitui a primeira (`docs/VALIDACAO_JG_ENG_TESTS.md`) e incorpora as decisões abaixo.
 
 ## Decisões do dono do projeto (valem acima de qualquer outra regra deste documento)
-1. **Vale o resultado final do `fh`.** Se ele avaliou errado e corrigiu antes de responder, isso é mérito do harness. Corrija o que ele deixar no disco ao terminar, sem `--keep`. Se ele desfizer a própria mudança, a resposta dele foi essa.
+1. **Só vale o resultado final.** Se o `fh` errou duas vezes e acertou na terceira, antes de entregar, conta como certo, sem penalidade. Tentativas intermediárias, rodadas de verificação e autocorreções são o processo interno do harness e não entram na nota nem no relatório como erro. Corrija o que ele deixar no disco ao terminar, sem `--keep`. Se ele desfizer a própria mudança, a entrega é o estado original. O mesmo vale para todos os harnesses.
 2. **O `fh` pode aprender entre exercícios.** A memória de skills é parte do harness e está sendo validada junto. O estado dele persiste de um exercício para o outro dentro do mesmo modo, e qualquer outro harness com memória persistente nativa recebe o mesmo tratamento.
 3. **Resolver antes de rodar e verificar.** Tudo que pode quebrar por ambiente ou configuração é resolvido e verificado antes da execução que conta. A falha de verificação do `fh` que a primeira versão apontava (não conhecer `scripts/test.sh`) já foi corrigida no próprio `fh` (seção 5.5).
 4. **Concorrência na primeira rodada.** Nada de ir direto a 20. Sobe até 5 exercícios em paralelo. Depois valida, degrau a degrau, se chega a 10 sem prejudicar o desempenho, e só sobe um degrau depois de confirmar que o anterior aguentou.
 5. **Teste final de capacidade, só do `fh`.** Ao final de tudo, começa com 20 sessões simultâneas e vai aumentando até onde o servidor aguenta. Mede o tok/s de cada atividade para calcular o tok/s médio por usuário e descobre a capacidade máxima em uso extremo, com outras técnicas de carga além da carga real (seção 8).
-6. **Quem julga a assertividade final é a LLM que conduz os testes, não o Qwen.** O juiz é você, a LLM operadora que está executando este prompt. O Frankenstein V2 (Qwen) aparece só como o modelo avaliado, dentro dos harnesses. Nada do que ele diz sobre o próprio trabalho entra na nota: nem o veredito interno do `fh`, nem o revisor LLM do `fh`, nem o "terminei, todos os testes passam" de qualquer harness. Esses sinais são registrados só como dados de comportamento, para comparar com o seu julgamento. Detalhes na seção 5.0b.
+6. **Quem julga a assertividade final é a LLM que conduz os testes, não o Qwen.** O juiz é você, a LLM operadora que está executando este prompt. O Frankenstein V2 (Qwen) aparece só como o modelo avaliado, dentro dos harnesses. Nada do que ele diz sobre o próprio trabalho entra na nota: nem o veredito interno do `fh`, nem o revisor LLM do `fh`, nem o "terminei, todos os testes passam" de qualquer harness. Esses sinais não entram no relatório como métrica. Detalhes na seção 5.0b.
 
 Nomes usados aqui: **Frankenstein V2** é o modelo (Qwen3.8-27B NVFP4 + MTP=3 no vLLM). **Frankenstein Harness** (`fh`) é o nosso harness. Não confunda os dois no relatório.
 
@@ -185,7 +185,7 @@ A revisão é **cega**: um script do operador renomeia as entregas para códigos
 
 **Consistência do juiz.** Reavalie às cegas 10% das entregas, sorteadas com semente fixa, numa segunda passada separada da primeira, e reporte a concordância. Se ela ficar abaixo de 90%, revise a rubrica, reavalie tudo e registre.
 
-**O que o harness diz sobre si** (veredito interno do `fh`, revisor do `fh`, mensagens finais de "pronto" dos outros harnesses) vai para uma matriz "autoavaliação × julgamento final" por harness: quantas vezes disse que estava certo e não estava, e vice-versa.
+**Só o resultado final conta (decisão 1).** O que o harness diz sobre si, as tentativas intermediárias e quantas rodadas ele precisou não entram no julgamento nem no relatório como acerto ou erro. Quem errou duas vezes e acertou na terceira está certo. Tempo e tokens gastos continuam sendo medidos como custo (seção 6).
 
 ### 5.0a Paralelização entre exercícios: rampa gradual até 10
 O objetivo é terminar o conjunto mais rápido, com vários exercícios ao mesmo tempo, sem estragar nem o desempenho nem a comparação. Nesta rodada o teto é 10; o uso extremo fica para a fase 7.
@@ -284,10 +284,10 @@ Pontos obrigatórios:
   - Com exercícios em paralelo, a ordem exata do aprendizado não é determinística; registre isso.
   - Ao terminar cada modo, guarde uma cópia de `WORKDIR/fh-state/<modo>/` e a saída de `fh activity` e `fh stats` (com `FH_HOME` apontando para ela).
   - Para os outros harnesses: se algum tiver memória persistente nativa (por exemplo, arquivos de memória por usuário), dê a ele o mesmo tratamento: um diretório de estado persistente por harness, vazio no início. Registre o que cada um tem.
-- **Sem `--keep` (decisão 1).** O que o `fh` deixar no disco ao terminar é a resposta dele: se a verificação interna reprovou e ele corrigiu, ótimo; se reprovou até o fim e ele desfez a mudança, a entrega é o estado original. Registre o `verdict` (`pass`/`fail`/`unverified`) e `rolledBack`. Como diagnóstico, fora da nota, aplique o patch rejeitado (o `rejectedPatch` do JSON é um caminho relativo a `/work`, dentro de `.fh/rejected/`) com `git apply` numa cópia separada e corrija essa cópia: isso mede quantas vezes o verificador do `fh` jogou fora trabalho que o julgamento final (seção 5.0b) aprovaria (falso negativo) e quantas vezes aprovou o que o julgamento final reprovou (falso positivo).
+- **Sem `--keep` (decisão 1).** O que o `fh` deixar no disco ao terminar é a resposta dele: se a verificação interna reprovou e ele corrigiu, ótimo; se reprovou até o fim e ele desfez a mudança, a entrega é o estado original. Não corrija patches rejeitados nem estados intermediários: só a entrega final importa. Antes da correção e da revisão às cegas, apague `.fh/` da cópia, porque lá ficam os patches rejeitados.
 - **Sem `--sandbox`** na comparação principal: o contêiner já isola todos os harnesses igualmente.
 - **Verificação com os scripts do exercício (decisão 3, já corrigido no `fh`).** Quando o repositório tem `scripts/test.sh`, o `fh` verifica com os scripts que o próprio repositório declara (`scripts/build.sh`, `typecheck.sh`, `lint.sh`, `test.sh`, na ordem, com `bash`), em vez de inferir `dotnet test` ou `npm test`. No jg-eng-tests isso dá `bash scripts/lint.sh` e `bash scripts/test.sh`. Confirme nos pilotos (fase 0, item 6). Se ainda aparecer comando inferido, pare e corrija antes da execução que conta.
-- Guarde o JSON de `--json`: rodadas de verificação, checks executados, workers, tokens, tool calls, chamadas reparadas ou malformadas, skills usadas (`skillsUsed`), aceitação do MTP.
+- Guarde o JSON de `--json` como dado bruto (não entra na nota): rodadas de verificação, checks executados, workers, tokens, tool calls, chamadas reparadas ou malformadas, skills usadas (`skillsUsed`), aceitação do MTP.
 
 ### 5.6 Frankenstein Harness, modo máximo de agentes
 Mesmo comando, com `maxConcurrency: 16` (o teto de workers por exercício, independente do `max-num-seqs`). Isso não força 16 agentes. É o teto: o planejador divide a tarefa em até 16 subtarefas com arquivos disjuntos, só quando elas são independentes. O regulador começa com 2 simultâneos e sobe conforme o `/metrics`. Também podem surgir workers "extra" para arquivos que ninguém possuía e um corretor por diretório em rodadas de reparo. Todos ficam restritos à pasta, pelo contêiner.
@@ -306,7 +306,6 @@ Com `max-num-seqs` fixo, esse modo pode saturar; isso é resultado, não erro. R
   - erros de infraestrutura (fora do denominador, listados), timeouts;
   - aprovação no grader, aprovação final (grader + revisão da LLM operadora) e aprovações derrubadas pela revisão, com os motivos;
   - nota de qualidade 0–5 da LLM operadora;
-  - autoavaliação do harness (veredito interno do `fh`, declaração de conclusão dos outros) contra o julgamento final.
 - **Tempo:**
   - tempo de parede total do harness;
   - por exercício: média, mediana, P90;
@@ -327,7 +326,7 @@ Com `max-num-seqs` fixo, esse modo pode saturar; isso é resultado, não erro. R
   - turnos, requisições, chamadas de ferramenta, tool calls malformadas;
   - execuções de `test.sh`/`lint.sh`, contadas nos logs do harness ou nos comandos registrados;
   - exercícios que terminaram sem declarar conclusão ou sem nenhuma mudança;
-  - `fh`: veredito interno, rodadas de verificação, rollbacks, skills aprendidas e skills usadas por exercício;
+  - `fh`: agentes, skills aprendidas e skills usadas por exercício (só para entender custo e aprendizado; não entram na nota);
   - agentes por exercício (Frankenstein Harness);
   - tentativas de rede bloqueadas.
 - **Hardware:**
@@ -351,7 +350,6 @@ Com `max-num-seqs` fixo, esse modo pode saturar; isso é resultado, não erro. R
   - Taxa de aprovação na primeira metade contra a segunda metade do catálogo, e nos exercícios em que alguma skill aprendida foi usada contra os demais.
   - Quantas skills foram aprendidas, promovidas e postas em quarentena.
   - Não conclua causalidade: a ordem mistura dificuldade com aprendizado. Se houver tempo, uma variante com memória desligada (FH_HOME vazio por exercício) no mesmo modo isola o efeito; marque-a como variante.
-- **Verificador do `fh` (decisão 1).** Matriz veredito interno × julgamento final da LLM operadora, e quantos rollbacks jogaram fora trabalho que o julgamento final aprovaria.
 - **1 agente contra máximo.** Aplique a regra de fan-out do projeto (`docs/FANOUT.md`), que vale para exercícios em que houve divisão. O modo máximo compensa se não perder qualidade e se: (a) a mediana de tempo ficar ≤ 80% da do modo 1 agente, ou a aprovação subir pelo menos 5 pontos; e (b) os tokens sem cache por exercício aprovado ficarem ≤ 2× os do modo 1 agente. Mostre também o resultado para todos os 130.
 - **Com repetições.** Se houver repetições, reporte a média por exercício e a variância entre elas. As estatísticas pareadas usam a taxa média por exercício.
 - **Referência externa**, marcada como ambiente diferente e fora das estatísticas: a rodada anterior do Frankenstein V2 com harness caseiro (57,7%, temperatura 0,2) e os resultados do Claude Opus 5.5 (50,0%) e do Sonnet 5.5 (47,7%) no Claude Code.
