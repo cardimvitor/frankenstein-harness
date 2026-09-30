@@ -131,6 +131,7 @@ pub struct DiffChecks {
     pub results: Vec<CheckResult>,
     pub diff: String,
     pub changed: Vec<String>,
+    pub deleted: Vec<String>,
 }
 
 pub async fn diff_checks(cp: &Checkpoints, base: &str, allowed_globs: Option<&[String]>) -> DiffChecks {
@@ -171,5 +172,5 @@ pub async fn diff_checks(cp: &Checkpoints, base: &str, allowed_globs: Option<&[S
         Err(e) => vec![format!("patch does not apply cleanly to the base: {e}")],
     };
     results.push(mk("patch applies", CheckKind::Patch, applies, "patch applies cleanly to the base".into()));
-    DiffChecks { results, diff, changed }
+    DiffChecks { results, diff, changed, deleted: ch.deleted.clone() }
 }

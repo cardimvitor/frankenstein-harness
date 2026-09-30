@@ -68,6 +68,8 @@ pub struct Config {
     pub max_task_tokens: u64,
     /// where the API key comes from when the env var is unset: auto | env | keychain
     pub api_key_store: String,
+    /// opt-in local JSONL of task outcomes and timings (never leaves the machine)
+    pub telemetry: bool,
     pub sampling: SamplingSet,
 }
 
@@ -93,6 +95,7 @@ impl Default for Config {
             verify_rounds_auto: 5,
             max_task_tokens: 800_000,
             api_key_store: "auto".into(),
+            telemetry: false,
             sampling: SamplingSet::default(),
         }
     }

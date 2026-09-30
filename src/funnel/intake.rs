@@ -3,11 +3,12 @@ use crate::llm::client::{ChatOptions, LlmClient, LlmError};
 use crate::tools::fs::list_all;
 use crate::types::{Message, Thinking};
 use crate::util::proc::{clip, run_simple};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::path::Path;
 use tokio_util::sync::CancellationToken;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Subtask {
     pub id: String,
     pub goal: String,
@@ -15,13 +16,13 @@ pub struct Subtask {
     pub deps: Vec<String>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PlanStep {
     pub step: String,
     pub files: Vec<String>,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Intake {
     pub trivial: bool,
     pub questions: Vec<String>,

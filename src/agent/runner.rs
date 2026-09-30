@@ -24,6 +24,8 @@ pub struct Events {
     pub tool_start: Option<Arc<dyn Fn(&ToolCall) + Send + Sync>>,
     pub tool_end: Option<Arc<dyn Fn(&ToolCall, &ToolResult, u64) + Send + Sync>>,
     pub notice: Option<Arc<dyn Fn(&str) + Send + Sync>>,
+    /// called with the full message history after every step (session persistence)
+    pub on_messages: Option<Arc<dyn Fn(&[Message]) + Send + Sync>>,
 }
 
 #[derive(Clone)]
@@ -252,6 +254,9 @@ pub async fn run_agent(task: &str, o: AgentOptions) -> AgentResult {
                 consecutive_fail = 0;
             }
             messages.push(Message::tool(call.id.clone(), res.output.clone()));
+        }
+        if let Some(f) = &o.events.on_messages {
+            f(&messages);
         }
         if recent.iter().any(|s| recent.iter().filter(|x| *x == s).count() >= 5) {
             stopped = Stopped::Loop;

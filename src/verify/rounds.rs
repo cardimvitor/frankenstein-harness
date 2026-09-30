@@ -95,7 +95,11 @@ pub async fn run_round(ctx: &VerifyCtx<'_>, st: &mut VerifyState, round: usize) 
         run_commands(ctx.cwd, &ctx.fp.verify, ctx.cancel.clone(), Duration::from_secs(600)),
         diff_checks(ctx.cp, ctx.base, ctx.allowed_globs.as_deref())
     );
-    let checks: Vec<CheckResult> = cmd_res.into_iter().chain(dc.results).collect();
+    let mut checks: Vec<CheckResult> = cmd_res.into_iter().chain(dc.results).collect();
+    let touched: Vec<String> = dc.changed.iter().filter(|f| !dc.deleted.contains(f)).cloned().collect();
+    if let Some(f) = super::format::format_check(ctx.cwd, ctx.cp, ctx.base, &touched).await {
+        checks.push(f);
+    }
     let (mut findings, mut dropped, mut ran) = (Vec::new(), 0, false);
     if let Some(llm) = ctx.llm {
         if !dc.diff.trim().is_empty() && !dc.changed.is_empty() {

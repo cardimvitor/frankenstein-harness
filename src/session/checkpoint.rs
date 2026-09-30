@@ -114,6 +114,17 @@ impl Checkpoints {
         self.git(&format!("git diff --cached --binary --no-color {id} --"), &env).await.stdout
     }
 
+    /// Does the checkpoint commit still exist?
+    pub async fn exists(&self, id: &str) -> bool {
+        run(&format!("git cat-file -e {id}^{{commit}}"), &self.cwd, RunOpts::default()).await.code == Some(0)
+    }
+
+    /// Content of `path` at the checkpoint (None when it did not exist there).
+    pub async fn file_at(&self, id: &str, path: &str) -> Option<String> {
+        let r = run(&format!("git show {id}:{path:?}"), &self.cwd, RunOpts::default()).await;
+        if r.code == Some(0) { Some(r.stdout) } else { None }
+    }
+
     /// Does `patch` apply cleanly to the checkpoint's tree? Checked against a temporary index; the worktree is untouched.
     pub async fn patch_applies(&self, base: &str, patch: &str) -> Result<(), String> {
         if patch.trim().is_empty() {

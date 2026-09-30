@@ -8,6 +8,7 @@ use crate::orchestrator::governor::{Governor, MetricsFn};
 use crate::orchestrator::master::{owners_of, run_workers, MasterOptions, WorkerResult};
 use crate::agent::prompt::{context_block, ContextParts};
 use crate::session::checkpoint::{Changes, Checkpoints};
+use crate::session::log::SessionLog;
 use crate::skills::design::{design_note, detect_design, is_ui_task, DesignSignal};
 use crate::skills::gate::{gate, render_skills, render_user};
 use crate::skills::store::{NewSkill, Scope};
@@ -108,11 +109,22 @@ pub struct TaskOptions {
     pub sandbox: bool,
     pub no_mine: bool,
     pub cancel: Option<CancellationToken>,
+    /// continue an interrupted session: the stored plan and base checkpoint are reused
+    pub resume: Option<ResumeState>,
+}
+
+/// State of an interrupted run, loaded from the session log.
+#[derive(Clone)]
+pub struct ResumeState {
+    pub session_id: String,
+    pub plan: Intake,
+    pub base: String,
+    pub history: Option<Vec<Message>>,
 }
 
 impl Default for TaskOptions {
     fn default() -> Self {
-        TaskOptions { auto: false, approval: Mode::AutoEdit, commit: false, plan_only: false, keep_on_fail: false, sandbox: false, no_mine: false, cancel: None }
+        TaskOptions { auto: false, approval: Mode::AutoEdit, commit: false, plan_only: false, keep_on_fail: false, sandbox: false, no_mine: false, cancel: None, resume: None }
     }
 }
 
@@ -239,6 +251,7 @@ pub struct Engine {
     pub hooks: Arc<crate::hooks::Hooks>,
     mcp: tokio::sync::OnceCell<Vec<crate::tools::ToolRef>>,
     started: std::sync::atomic::AtomicBool,
+    session: Mutex<Option<SessionLog>>,
     pending: Mutex<Vec<tokio::task::JoinHandle<()>>>,
 }
 
@@ -247,7 +260,7 @@ impl Engine {
         let llm = LlmClient::new(cfg.clone(), env.clone());
         let cwd: PathBuf = cwd.into();
         let hooks = Arc::new(crate::hooks::Hooks::load(&cwd, &env));
-        Engine { cfg, env, io, cwd, llm, store, hooks, mcp: tokio::sync::OnceCell::new(), started: std::sync::atomic::AtomicBool::new(false), pending: Mutex::new(vec![]) }
+        Engine { cfg, env, io, cwd, llm, store, hooks, mcp: tokio::sync::OnceCell::new(), started: std::sync::atomic::AtomicBool::new(false), session: Mutex::new(None), pending: Mutex::new(vec![]) }
     }
 
     /// Wait for post-delivery background work (skill learning) so short-lived CLI runs do not drop it.
@@ -275,6 +288,7 @@ impl Engine {
             tool_start: Some(Arc::new(move |c| io3.tool_start(&c.name, &c.args))),
             tool_end: Some(Arc::new(move |c, r, ms| io4.tool_end(&c.name, r.ok, &r.output, ms))),
             notice: Some(Arc::new(move |m| io5.notice(NoticeKind::Info, m))),
+            on_messages: self.session.lock().unwrap().clone().map(|sl| Arc::new(move |m: &[Message]| sl.save_history(m)) as Arc<dyn Fn(&[Message]) + Send + Sync>),
         };
         let cio = io.clone();
         let confirm: ConfirmFn = Arc::new(move |tool, args| {
@@ -299,6 +313,15 @@ impl Engine {
                 r.timings = timings.clone();
                 r.llm = self.llm.stats();
                 r.metrics = delta(&m0, &fetch_metrics(&self.cfg, &self.env).await);
+                if matches!(r.verdict.as_str(), "pass" | "unverified" | "fail") {
+                    crate::session::signals::write_last_task(&self.cwd, &r.verdict, r.rejected_patch.as_deref(), &r.changed);
+                }
+                if self.cfg.telemetry {
+                    crate::session::signals::record_task(&self.env, json!({"ts": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0), "verdict": r.verdict, "rounds": r.rounds, "totalMs": r.timings.total_ms, "promptTokens": r.llm.prompt_tokens, "completionTokens": r.llm.completion_tokens, "repaired": r.llm.repaired, "acceptanceRate": r.metrics.acceptance_rate}));
+                }
+                if let Some(sl) = self.session.lock().unwrap().clone() {
+                    sl.append(json!({"t": "result", "verdict": r.verdict, "reason": r.reason, "changed": r.changed}));
+                }
                 self.hooks.fire(crate::hooks::HookEvent::Stop, json!({"verdict": r.verdict, "reason": r.reason, "changed": r.changed})).await;
                 return r;
             }};
@@ -325,6 +348,12 @@ impl Engine {
         }
         let fp: Fingerprint = fingerprint(&self.cwd);
         let known = self.store.is_known_project(&fp.project_id);
+        let slog = match &o.resume {
+            Some(r) => SessionLog::open(&self.env, &fp.project_id, &r.session_id),
+            None => SessionLog::create(&self.env, &fp.project_id),
+        };
+        slog.append(json!({"t": if o.resume.is_some() { "resume" } else { "start" }, "task": task, "auto": o.auto}));
+        *self.session.lock().unwrap() = Some(slog.clone());
         let label = self.cwd.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "project".into());
         self.store.register_project(&fp, &label);
 
@@ -406,16 +435,22 @@ impl Engine {
                 intake_args(&self.llm, $t, &repo, $auto, $ans, g.ambiguous.clone(), self.cfg.max_concurrency, o.cancel.clone())
             };
         }
-        let mut plan: Intake = match intake(ia!(task, o.auto, vec![])).await {
-            Ok(p) => p,
-            Err(e) => {
-                if e.aborted || o.cancel.as_ref().map(|c| c.is_cancelled()).unwrap_or(false) {
-                    finish!(TaskResult::new("aborted", "cancelled"));
+        let resumed = o.resume.clone();
+        let mut plan: Intake = if let Some(r) = &resumed {
+            io.notice(NoticeKind::Phase, "resuming the interrupted task with its stored plan");
+            r.plan.clone()
+        } else {
+            match intake(ia!(task, o.auto, vec![])).await {
+                Ok(p) => p,
+                Err(e) => {
+                    if e.aborted || o.cancel.as_ref().map(|c| c.is_cancelled()).unwrap_or(false) {
+                        finish!(TaskResult::new("aborted", "cancelled"));
+                    }
+                    finish!(TaskResult::new("error", &format!("planning failed: {e}")));
                 }
-                finish!(TaskResult::new("error", &format!("planning failed: {e}")));
             }
         };
-        if !o.auto && !plan.questions.is_empty() {
+        if resumed.is_none() && !o.auto && !plan.questions.is_empty() {
             let qs = plan.questions.clone();
             let answers = io.ask_questions(qs.clone()).await;
             let pairs: Vec<(String, String)> = qs.iter().enumerate().map(|(i, q)| (q.clone(), answers.get(i).cloned().unwrap_or_default())).collect();
@@ -424,7 +459,7 @@ impl Engine {
                 Err(e) => finish!(TaskResult::new("error", &format!("planning failed: {e}"))),
             }
         }
-        if !o.auto {
+        if resumed.is_none() && !o.auto {
             let ap = io.approve_plan(&render_plan(&plan), plan.trivial).await;
             if !ap.ok {
                 match ap.feedback {
@@ -458,7 +493,17 @@ impl Engine {
 
         // work
         let cp = Checkpoints::new(self.cwd.clone());
-        let base_cp = cp.create("before task").await.unwrap_or_default();
+        slog.append(json!({"t": "plan", "plan": plan}));
+        let base_cp = match &resumed {
+            Some(r) => {
+                if !cp.exists(&r.base).await {
+                    finish!(TaskResult::new("error", "the stored checkpoint no longer exists; start a new task"));
+                }
+                r.base.clone()
+            }
+            None => cp.create("before task").await.unwrap_or_default(),
+        };
+        slog.append(json!({"t": "checkpoint", "id": base_cp}));
         let (wrap, backend) = if o.sandbox { sandbox_for(&self.cwd, true) } else { (None, "none") };
         if o.sandbox {
             io.notice(NoticeKind::Info, &format!("shell sandbox: {backend}"));
@@ -504,7 +549,17 @@ impl Engine {
             };
             workers = run_workers(&plan.enriched, &plan.subtasks, &mo).await;
         } else {
-            let r = run_agent(&task_text, self.agent_options(&o, &context, &wrap)).await;
+            let mut ao = self.agent_options(&o, &context, &wrap);
+            let mut first_msg = task_text.clone();
+            if let Some(r) = &resumed {
+                if let Some(h) = &r.history {
+                    ao.history = Some(h.clone());
+                    first_msg = "The previous run was interrupted. The working tree holds the work done so far. Inspect it, then continue and finish the task.".to_string();
+                } else {
+                    first_msg = format!("{task_text}\n\nA previous attempt was interrupted; the working tree may already hold part of the work. Inspect it (git status, git diff) and continue.");
+                }
+            }
+            let r = run_agent(&first_msg, ao).await;
             history = Some(r.messages.clone());
             if r.stopped == crate::agent::Stopped::Error {
                 let mut res = TaskResult::new("error", r.error.as_deref().unwrap_or("agent error"));

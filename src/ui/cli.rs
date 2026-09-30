@@ -28,6 +28,10 @@ Usage:
   fh validate-vllm [options]  measure MTP, prefix cache, tool calls, long context, concurrency
   fh eval --tasks <dir> [options]   run the eval corpus (--runner fh|fh-single|qwen|both|all|orch)
   fh undo                     restore the working tree to the last checkpoint
+  fh keep                     apply the last rejected patch anyway (recorded as a verifier false positive)
+  fh sessions                 list task sessions of this repository (interrupted ones can be resumed)
+  fh resume [id]              continue an interrupted session with its stored plan and checkpoint
+  fh trust [--revoke|--list]  trust this repository: project hooks (.fh/hooks.json) and MCP servers (.fh/mcp.json) run only then
   fh activity                 recent skill activity
   fh history [skill]          version history (hash, reason, diff) of learned skills
   fh stats                    runtime statistics: verdicts, rounds, reviewer quality, tokens per task
@@ -190,6 +194,56 @@ pub async fn main(argv: Vec<String>) -> i32 {
             }
             return 0;
         }
+        "trust" => {
+            if args.has("list") {
+                for p in crate::trust::list(&env) {
+                    println!("{p}");
+                }
+            } else if args.has("revoke") {
+                match crate::trust::untrust(&env, &cwd) {
+                    Ok(()) => println!("no longer trusting {}", cwd.display()),
+                    Err(e) => eprintln!("{e}"),
+                }
+            } else {
+                match crate::trust::trust(&env, &cwd) {
+                    Ok(()) => println!("trusting {}: its .fh/hooks.json and .fh/mcp.json will now run", cwd.display()),
+                    Err(e) => eprintln!("{e}"),
+                }
+            }
+            return 0;
+        }
+        "sessions" => {
+            let fp = crate::fingerprint::fingerprint(&cwd);
+            let rows = crate::session::log::list(&env, &fp.project_id);
+            if rows.is_empty() {
+                println!("no sessions yet");
+            }
+            for s in rows.iter().take(20) {
+                let state = match &s.verdict {
+                    Some(v) => v.clone(),
+                    None => yellow("interrupted (fh resume)").to_string(),
+                };
+                println!("{}  {:<24} {}", s.id, state, s.task.chars().take(70).collect::<String>());
+            }
+            return 0;
+        }
+        "keep" => {
+            let fp = crate::fingerprint::fingerprint(&cwd);
+            let last = crate::session::signals::read_last_task(&cwd);
+            let Some(patch) = last.as_ref().and_then(|v| v["rejectedPatch"].as_str()).map(|s| s.to_string()) else {
+                eprintln!("no rejected patch to keep");
+                return 1;
+            };
+            let r = run_simple(&format!("git apply --whitespace=nowarn {patch:?}"), &cwd, 30_000).await;
+            if r.code != Some(0) {
+                eprintln!("could not apply {patch}: {}", r.stderr.trim());
+                return 1;
+            }
+            crate::session::signals::record_signal(&env, &fp.project_id, "kept_rejected");
+            crate::session::signals::mark_handled(&cwd);
+            println!("applied {patch}");
+            return 0;
+        }
         "undo" => {
             let cp = Checkpoints::new(cwd.clone());
             let last = run_simple("git for-each-ref --sort=-refname --format=%(objectname) refs/fh/checkpoints --count=1", &cwd, 10_000).await.stdout.trim().to_string();
@@ -198,6 +252,12 @@ pub async fn main(argv: Vec<String>) -> i32 {
                 return 1;
             }
             let files = cp.restore(&last).await;
+            if let Some(lt) = crate::session::signals::read_last_task(&cwd) {
+                if matches!(lt["verdict"].as_str(), Some("pass") | Some("unverified")) && lt["handled"] != true {
+                    crate::session::signals::record_signal(&env, &crate::fingerprint::fingerprint(&cwd).project_id, "undid_pass");
+                    crate::session::signals::mark_handled(&cwd);
+                }
+            }
             println!("restored {} file(s) to checkpoint {}", files.len(), &last[..8.min(last.len())]);
             return 0;
         }
@@ -210,6 +270,12 @@ pub async fn main(argv: Vec<String>) -> i32 {
                     } else {
                         println!("tasks {}: pass {} · fail {} · unverified {} · avg rounds {:.2} · avg tokens/task {:.0}", r.tasks, r.pass, r.fail, r.unverified, r.avg_rounds, r.avg_tokens);
                         println!("reviewer findings raised {} · dropped as uncheckable {} ({:.0}%) · blockers {}", r.reviewer_raised, r.reviewer_dropped, if r.reviewer_raised > 0 { 100.0 * r.reviewer_dropped as f64 / r.reviewer_raised as f64 } else { 0.0 }, r.reviewer_blockers);
+                        let sg = crate::session::signals::signal_counts(&env);
+                        println!("user signals: undid a passing task {}× (possible verifier false negative) · applied a rejected patch {}× (possible false positive)", sg.undid_pass, sg.kept_rejected);
+                        let ts = crate::session::signals::telemetry_summary(&env);
+                        if ts.tasks > 0 {
+                            println!("telemetry ({} tasks): p50 {:.1}s · p95 {:.1}s{} · {} repaired tool calls", ts.tasks, ts.p50_ms as f64 / 1000.0, ts.p95_ms as f64 / 1000.0, ts.avg_acceptance.map(|a| format!(" · MTP acceptance {:.0}%", a * 100.0)).unwrap_or_default(), ts.repaired_calls);
+                        }
                         println!("{}", dim("A high dropped share means the reviewer cites lines it cannot support; verifier false positives are measured against an oracle by `fh eval`."));
                     }
                 }
@@ -325,7 +391,7 @@ pub async fn main(argv: Vec<String>) -> i32 {
             }
         });
     }
-    let opts = |cancel: Option<CancellationToken>| TaskOptions { auto: args.has("auto"), approval, commit: args.has("commit"), plan_only: args.has("plan-only"), keep_on_fail: args.has("keep"), sandbox: args.has("sandbox"), no_mine: false, cancel };
+    let opts = |cancel: Option<CancellationToken>| TaskOptions { auto: args.has("auto"), approval, commit: args.has("commit"), plan_only: args.has("plan-only"), keep_on_fail: args.has("keep"), sandbox: args.has("sandbox"), no_mine: false, cancel, resume: None };
 
     match args.cmd.as_str() {
         "run" => {
@@ -343,6 +409,27 @@ pub async fn main(argv: Vec<String>) -> i32 {
                 "unverified" => 3,
                 _ => 1,
             }
+        }
+        "resume" => {
+            let fp = crate::fingerprint::fingerprint(&cwd);
+            let Some(s) = crate::session::log::load(&env, &fp.project_id, args.positional.first().map(|s| s.as_str())) else {
+                eprintln!("no session to resume (see `fh sessions`)");
+                return 1;
+            };
+            if let Some(v) = &s.verdict {
+                println!("session {} already finished: {v} ({})", s.id, s.reason);
+                return 0;
+            }
+            let (Some(plan), Some(base)) = (s.plan.clone(), s.checkpoint.clone().filter(|c| !c.is_empty())) else {
+                eprintln!("session {} was interrupted before planning finished; run the task again:\n  fh run {:?}", s.id, s.task);
+                return 1;
+            };
+            let mut o = opts(Some(cancel));
+            o.resume = Some(crate::engine::ResumeState { session_id: s.id.clone(), plan, base, history: s.history.clone() });
+            let r = engine.run_task(&s.task, o).await;
+            print_result(&r, args.has("json"));
+            engine.drain(20_000).await;
+            if matches!(r.verdict.as_str(), "pass" | "planned") { 0 } else if r.verdict == "unverified" { 3 } else { 1 }
         }
         "tui" | "" if args.cmd == "tui" || (std::io::stdout().is_terminal() && std::io::stdin().is_terminal() && !args.has("plain")) => {
             drop(engine);
