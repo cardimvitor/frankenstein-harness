@@ -1,6 +1,6 @@
 # Roadmap: what is left
 
-Status date: 2026-09-30. The feature work that does not need the real model is done (see DESIGN.md section 19). What remains is either **blocked on the VPS**, **blocked on a platform I cannot run here**, or a **decision for you**. Edit freely.
+Status date: 2026-09-30 (fourth pass). The feature work that does not need the real model is done (DESIGN.md sections 19 and 20). What remains is **blocked on the VPS**, **blocked on a platform I could not verify from here**, or a **decision for you**. Edit freely.
 
 ## 1. Blocked on the VPS (the real Qwen 3.8 27B, MTP 3, RTX 6000 Blackwell, vLLM)
 
@@ -18,35 +18,35 @@ Nothing below can be settled by reading code; each needs `scripts/vps-validate.s
 | Compaction threshold | summaries trigger at 72% of the context window | check `context summarized` notices on long tasks; lower `contextWindow` if quality drops earlier |
 | Embedding recall | worth enabling only if the eval shows relevant skills being missed | set `embeddingModel`, compare `embed_recall` activity against outcomes |
 
-## 2. Blocked on a platform or resource I could not use
+## 2. Blocked on a platform or resource I could not verify
 
 | Item | State | What is needed |
 |---|---|---|
-| Windows | compiles for `x86_64-pc-windows-gnu`; Credential Manager implemented but never run; CI runs the suite on `windows-latest` (non-blocking) | read the CI result; still missing: job objects (memory limits, guaranteed tree kill), a restricted-token sandbox, portable test helpers (tests use `sh`/`python3`) |
-| macOS | CI runs the suite on `macos-latest`; Seatbelt profile never exercised | run `fh run ... --sandbox` on a Mac |
-| `csharp-ls`, `gopls` diagnostics | wired, not run (only pyright and TypeScript 7 were tested against real servers) | a machine with .NET and Go projects |
+| **Windows (launch requirement)** | Written and cross-compiled: job objects (process-tree kill, optional memory cap), PowerShell 7 preferred, `python`/`py -3` instead of the Store stub, PowerShell-safe quoting, Credential Manager, MSBuild + vstest verification of classic .NET Framework 4.8 solutions, and a real-Windows test suite (`tests/windows.rs`, including a full msbuild/vstest run of a fixture solution). **None of it has been run on Windows yet**: the GitHub Actions runs I could observe started failing instantly (looks like a billing or minutes limit; the job log is empty) and this integration may not dispatch workflows. | Run `cargo test --test windows` on a Windows machine (Visual Studio Build Tools + .NET Framework 4.8 targeting pack), or fix the Actions quota and push a commit containing `[ci-full]`. Still not built: a Windows **filesystem sandbox** (the Codex design is dedicated low-privilege accounts + ACLs set up with elevation; see `docs/STUDY.md`). Until then `--sandbox` on Windows is process containment only; use a VM for untrusted repositories. |
+| macOS | CI ran the full suite green earlier; Seatbelt profile never exercised | run `fh run ... --sandbox` on a Mac |
+| `csharp-ls`, `gopls` diagnostics | wired, not run (pyright, TypeScript 7 and rust-analyzer were tested against the real servers) | a machine with .NET and Go projects |
 | Release workflow | packaging script tested locally on the musl build; the workflow never ran | push a `v0.1.0` tag |
-| Codex CLI / Hermes study | not done: GitHub API was unreachable (403 through the proxy) | see `docs/STUDY.md` |
-| Terminal-Bench adapter | not built: its tasks need containers | decide whether you need it |
-| MCP OAuth, resources, prompts | not built | say which servers you use (question 2) |
+| Terminal-Bench adapter | not built: its tasks need containers | Docker on the VPS |
+| SWE-bench without Docker | adapter needs each repo's dependencies installed | plan: mount the static musl `fh` into the official per-instance images |
 
 ## 3. Small follow-ups I would do next
 
-1. Windows: job objects for process-tree kill and memory limits; make the test helpers portable so the Windows job can become blocking.
-2. (done) `fh doctor` reports Landlock ABI, trust, hooks, language servers and MCP tools.
-3. An `fh mcp list` and `fh hooks list` for inspecting what is active.
-4. Per-repo `.fh/config.json` schema documentation (the options are listed in README and SECURITY only in part).
-5. Web UI: search in the file viewer, keyboard navigation in the tree.
+1. Skill lifecycle from Hermes: stale (14 days) and archived (30 days) by inactivity, and a `pin` flag; deterministic, never deletes.
+2. Cross-session search over past task sessions (`fh search`), the best-value idea from Hermes' memory system.
+3. Run the miner/IMPROVE/research calls with the stable prompt prefix so they reuse vLLM's prefix cache (measure on the VPS first).
+4. Windows filesystem sandbox (accounts + ACLs, or documented VM requirement) and a Windows installer.
+5. MCP: resources and prompts, OAuth for servers without dynamic client registration (pre-registered client id).
+6. Web UI: search in the file viewer, keyboard navigation in the tree.
 
 ## 4. Decisions so far (your answers, 2026-09-30)
 
 | Question | Answer | Consequence |
 |---|---|---|
 | .NET Framework 4.8 on Windows a launch requirement? | **Yes** | Windows moves from "later" to launch-blocking: classic projects are now built with MSBuild and tested with vstest.console (located through vswhere; **written, not yet run on Windows**). Still needed before launch: run it on a real Windows host with a .NET Framework solution, job objects, a Windows sandbox (or a documented VM requirement), portable integration tests so the Windows CI job can block. |
-| MCP servers | **All** | The client is generic, so any stdio or streamable-HTTP server works. Remote servers that need OAuth (GitHub, Sentry, Linear, Atlassian, ...) do **not** work yet: OAuth 2.1 with PKCE and dynamic client registration is the missing piece. Ranked first-tier list to test: filesystem, git, fetch, GitHub, Playwright, a SQL server, docs (Context7), memory. |
-| Language servers | **C#, TypeScript, JavaScript, Python, Rust** | Python (pyright), TypeScript/JavaScript (TypeScript 7 native server, or typescript-language-server for older projects) and Rust (rust-analyzer) are tested against the real servers. C# (`csharp-ls`) is wired but unrun, and classic .NET Framework projects will need MSBuild on the machine. |
-| Token cost of fan-out | open: see 5 | |
-| Auth beyond bearer | open: see 6 | |
+| MCP servers | **All** | Any stdio or streamable-HTTP server works, and remote servers that need OAuth now work too: `fh mcp login <server>` runs OAuth 2.1 (discovery, dynamic client registration, PKCE S256, resource indicators) and tokens refresh automatically (tested against a mock authorization server; **not** yet against GitHub, Sentry or Linear themselves). Servers without dynamic client registration are not supported yet. First-tier list to try: filesystem, git, fetch, GitHub, Playwright, a SQL server, docs (Context7), memory. |
+| Language servers | **C#, TypeScript, JavaScript, Python, Rust** | Python (pyright), TypeScript/JavaScript (TypeScript 7 native server, or typescript-language-server for older projects) and Rust (rust-analyzer) are tested against the real servers, and servers are now kept warm between rounds. C# (`csharp-ls`) is wired but unrun, and classic .NET Framework projects need MSBuild on the machine. |
+| Token cost of fan-out | rule proposed in section 5 (awaiting your numbers) | the eval report now prints uncached tokens per solved task, wall time per solved task, and a PASS/FAIL line for each part of the rule |
+| Auth beyond bearer | open: see 6 | LiteLLM in front of vLLM is verified for the request shapes `fh` sends (docs/LITELLM.md); it fits the "gateway with per-user keys" row |
 | First eval baseline | your one repository later, plus famous benchmarks | Adapters exist for the Aider polyglot benchmark (all six languages verified) and SWE-bench Verified; see 7. |
 | Trust step per repository | **Yes** | already how it works (`fh trust`) |
 
@@ -61,7 +61,7 @@ A rule you can adopt and the eval will check:
 3. **Cost ceiling**: uncached-plus-completion tokens per solved task at most 2x single-agent (1.5x if you share the GPU with other work).
 4. **Stay narrow**: fan out only when the planner declares two or more subtasks with disjoint files (already so); everything else runs as one agent.
 
-The harness already caps a task (`maxTaskTokens`, workers get 60% of it). What is missing is the measurement: the eval report should show *uncached tokens per solved task* and wall time per runner, so the rule above is a computed pass/fail line rather than a judgement. That is a small change I can make next.
+The harness already caps a task (`maxTaskTokens`, workers get 60% of it). The measurement is built: `fh eval` and the VPS summary compute *uncached tokens per solved task* and wall time per runner and grade the rule above as PASS/FAIL lines (when the server does not report cached tokens, the measured prefix-cache hit rate is used to estimate them).
 
 ## 6. Auth options beyond bearer (for a vLLM on a VPS)
 
@@ -90,5 +90,5 @@ Suggested first baseline: about 60 polyglot tasks (10 per language) with `--repe
 
 1. Approve the fan-out rule in section 5 (or change the numbers).
 2. Pick the auth option in section 6.
-3. Say whether OAuth for remote MCP servers is worth building now, or whether local stdio servers cover you for the launch.
+3. Try `fh mcp login` against one real remote server you use (GitHub, Sentry, ...) and tell me which one fails.
 4. Send the test repository whenever it is ready.

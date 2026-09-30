@@ -338,3 +338,14 @@ Everything in `docs/ROADMAP.md` that did not need the VPS is now implemented and
 | P. Web depth | `web/render.js`, `src/ui/server.rs` | File viewer (`/api/file`, secrets and key files withheld), per-file highlighted diffs (own tokenizer, no external script), sessions panel with resume, markdown tables/lists/headings with links shown as text. Verified in real Chromium. |
 | Q. Study | `docs/STUDY.md` | **Not done**: the Codex CLI source was not reachable from the build environment. |
 | R. Releases | `.github/workflows/release.yml`, `scripts/package.sh` | Six targets on a `v*` tag. The packaging script was run locally on the musl build; the workflow itself has not run. |
+
+## 20. Fourth pass (2026-09-30): speed, Windows, OAuth, study
+
+- **Verification speed** (`src/verify/lsp.rs`, `src/verify/rounds.rs`): language servers start once per workspace, at the beginning of a task so startup overlaps planning and coding, and stay warm; base-checkpoint diagnostics are cached per task; the formatter, language servers and the LLM reviewer now run alongside build and tests instead of after them. Measured on this machine with pyright: a check after the server is warm takes about 0.3 s instead of about 2.4 s. (Against the instant mock the whole verify phase is dominated by the first analysis; the saving shows when the model takes real time.)
+- **Fewer model turns**: `edit` accepts a list of edits per file (atomic), and a syntax check on every written file (Python, JS, shell, JSON) is returned in the same turn. An empty model reply is nudged instead of accepted.
+- **Safer defaults**: command rules (`.fh/rules.json`, allow/prompt/forbid by prefix with self-tests) and prompt-injection screening of AGENTS.md/SKILL.md that arrive with a checkout (`src/skills/threat.rs`), both adapted from ideas in `docs/STUDY.md` with our own code.
+- **MCP OAuth** (`src/mcp/oauth.rs`): protected-resource and authorization-server discovery, dynamic client registration, PKCE S256, resource indicators, refresh, token file with mode 0600; `fh mcp list|login|logout`. Tested against a mock authorization server, including expiry, revocation and a forged state.
+- **Eval cost metric**: uncached tokens per solved task, wall time per solved task and the fan-out rule (`src/eval/runner.rs`), also graded in the VPS summary.
+- **Benchmarks**: Aider polyglot adapter (all six languages verified solvable), SWE-bench adapter, `fh record`.
+- **Windows** (`src/util/winjob.rs`, `tests/windows.rs`, `tests/fixtures/netfx`): see ROADMAP section 2; written and cross-compiled, not yet run on Windows.
+- **LiteLLM**: request shapes verified through LiteLLM 1.103.1 (`docs/LITELLM.md`).
