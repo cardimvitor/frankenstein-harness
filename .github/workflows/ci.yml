@@ -14,11 +14,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        # macOS and Windows minutes are billed at a multiple: on pushes they run only for commits whose message contains
+        # [ci-full] (always for pull requests, manual runs and main)
+        os: ${{ fromJSON((github.event_name != 'push' || github.ref == 'refs/heads/main' || contains(github.event.head_commit.message, '[ci-full]')) && '["ubuntu-latest","macos-latest","windows-latest"]' || '["ubuntu-latest"]') }}
     runs-on: ${{ matrix.os }}
-    # macOS and Windows minutes are billed at a multiple: on pushes they run only for commits whose message contains [ci-full]
-    # (always for pull requests, manual runs and main)
-    if: matrix.os == 'ubuntu-latest' || github.event_name != 'push' || github.ref == 'refs/heads/main' || contains(github.event.head_commit.message, '[ci-full]')
     # Windows is a target platform but the integration suites still shell out to POSIX `sh` and `python3`: report, do not block.
     continue-on-error: ${{ matrix.os == 'windows-latest' }}
     timeout-minutes: 45
