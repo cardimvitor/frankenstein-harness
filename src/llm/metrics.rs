@@ -87,7 +87,7 @@ pub fn summarize(raw: HashMap<String, f64>) -> VllmMetrics {
 }
 
 pub async fn fetch_metrics(cfg: &Config, env: &Env) -> Option<VllmMetrics> {
-    let client = reqwest::Client::builder().timeout(Duration::from_secs(3)).build().ok()?;
+    let client = crate::http::client_builder(cfg).ok()?.timeout(Duration::from_secs(3)).build().ok()?;
     let mut req = client.get(&cfg.metrics_url);
     for (k, v) in auth_headers(cfg, env) {
         req = req.header(k, v);

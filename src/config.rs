@@ -68,6 +68,14 @@ pub struct Config {
     pub max_task_tokens: u64,
     /// where the API key comes from when the env var is unset: auto | env | keychain
     pub api_key_store: String,
+    /// mTLS: PEM file with the client certificate (and, unless `clientKey` is set, its private key)
+    pub client_cert: String,
+    pub client_key: String,
+    /// extra CA certificate (PEM) to trust for the endpoint
+    pub ca_cert: String,
+    /// command that prints a fresh access token (OIDC/JWT: e.g. a CLI that refreshes it); cached, refreshed on 401
+    pub auth_token_cmd: String,
+    pub auth_token_ttl_secs: u64,
     /// opt-in local JSONL of task outcomes and timings (never leaves the machine)
     pub telemetry: bool,
     pub sampling: SamplingSet,
@@ -96,6 +104,11 @@ impl Default for Config {
             max_task_tokens: 800_000,
             api_key_store: "auto".into(),
             telemetry: false,
+            client_cert: String::new(),
+            client_key: String::new(),
+            ca_cert: String::new(),
+            auth_token_cmd: String::new(),
+            auth_token_ttl_secs: 300,
             sampling: SamplingSet::default(),
         }
     }
@@ -195,7 +208,8 @@ pub fn auth_headers(cfg: &Config, env: &Env) -> Vec<(String, String)> {
     for (k, v) in &cfg.extra_headers {
         h.push((k.clone(), v.clone()));
     }
-    if let Some(secret) = env.get(&cfg.api_key_env).filter(|s| !s.is_empty()) {
+    let dynamic = if cfg.auth_token_cmd.is_empty() { None } else { crate::http::token_from_cmd(&cfg.auth_token_cmd, cfg.auth_token_ttl_secs) };
+    if let Some(secret) = dynamic.as_ref().or_else(|| env.get(&cfg.api_key_env).filter(|s| !s.is_empty())) {
         match cfg.auth_scheme.as_str() {
             "bearer" => h.push(("Authorization".into(), format!("Bearer {secret}"))),
             "header" => h.push((cfg.auth_header.clone(), secret.clone())),
@@ -211,6 +225,7 @@ fn secret_values(env: &Env) -> Vec<String> {
         ["key", "token", "secret", "password", "auth"].iter().any(|w| k.contains(w))
     };
     let mut v: Vec<String> = env.iter().filter(|(k, val)| val.len() >= 8 && re(k)).map(|(_, val)| val.clone()).collect();
+    v.extend(crate::http::cached_tokens().into_iter().filter(|t| t.len() >= 8));
     v.sort_by_key(|s| std::cmp::Reverse(s.len()));
     v
 }

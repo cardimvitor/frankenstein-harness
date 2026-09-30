@@ -20,4 +20,5 @@ pub mod secrets;
 pub mod tui;
 pub mod trust;
 pub mod hooks;
+pub mod http;
 pub mod mcp;

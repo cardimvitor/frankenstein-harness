@@ -109,7 +109,7 @@ async fn doctor(cfg: &Config, env: &Env) {
     let ok = |m: &str| println!("{} {m}", green("✓"));
     let bad = |m: &str| println!("{} {m}", red("✗"));
     println!("endpoint {}  model {}  auth {}{}", cfg.endpoint, cfg.model, cfg.auth_scheme, if cfg.auth_scheme != "none" { format!(" ({} {})", cfg.api_key_env, if env.get(&cfg.api_key_env).map(|s| !s.is_empty()).unwrap_or(false) { "set" } else { "NOT set" }) } else { String::new() });
-    let client = reqwest::Client::new();
+    let client = crate::http::client(cfg);
     let mut req = client.get(format!("{}/models", cfg.endpoint)).timeout(Duration::from_secs(8));
     for (k, v) in auth_headers(cfg, env) {
         req = req.header(k, v);

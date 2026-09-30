@@ -100,7 +100,7 @@ fn tools() -> Vec<ToolSpec> {
 }
 
 async fn raw_chat(cfg: &Config, env: &Env, body: Value) -> (u16, Value) {
-    let client = reqwest::Client::new();
+    let client = crate::http::client(cfg);
     let mut req = client.post(format!("{}/chat/completions", cfg.endpoint)).timeout(Duration::from_secs(300)).json(&body);
     for (k, v) in auth_headers(cfg, env) {
         req = req.header(k, v);
@@ -142,7 +142,7 @@ pub async fn validate_vllm(cfg: &Config, env: &Env, o: ValidateOptions) -> i32 {
 
     // 1. connectivity and auth
     {
-        let client = reqwest::Client::new();
+        let client = crate::http::client(cfg);
         let get = |url: String, with_auth: bool| {
             let client = client.clone();
             let hdrs = if with_auth { auth_headers(cfg, env) } else { vec![] };

@@ -87,7 +87,10 @@ pub struct LlmClient {
 
 impl LlmClient {
     pub fn new(cfg: Config, env: Env) -> Self {
-        let http = reqwest::Client::builder().pool_idle_timeout(Duration::from_secs(30)).build().expect("http client");
+        let http = crate::http::client_builder(&cfg).and_then(|b| b.pool_idle_timeout(Duration::from_secs(30)).build().map_err(|e| e.to_string())).unwrap_or_else(|e| {
+            eprintln!("warning: {e}");
+            reqwest::Client::new()
+        });
         LlmClient { cfg, env, http, stats: Arc::new(Mutex::new(LlmStats::default())) }
     }
 
@@ -177,7 +180,12 @@ impl LlmClient {
             let code = res.status().as_u16();
             let txt = redact(&res.text().await.unwrap_or_default(), &self.env);
             let cut: String = txt.chars().take(500).collect();
-            return Err(LlmError::new(format!("HTTP {code}: {cut}"), code == 429 || code >= 500, Some(code)));
+            // a rejected token from the token command is refreshed once by retrying with a new one
+            let refreshable = code == 401 && !self.cfg.auth_token_cmd.is_empty();
+            if refreshable {
+                crate::http::invalidate_token(&self.cfg.auth_token_cmd);
+            }
+            return Err(LlmError::new(format!("HTTP {code}: {cut}"), code == 429 || code >= 500 || refreshable, Some(code)));
         }
         tokio::select! {
             r = tokio::time::timeout(overall, self.consume(res, o, t0, idle)) => match r {
