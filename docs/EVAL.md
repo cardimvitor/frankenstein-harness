@@ -25,7 +25,7 @@ Verifier false positives (verdict `fail` while the oracle passes the final tree)
 
 ## Built-in smoke corpus
 
-Five small dependency-free tasks (`src/eval/corpus.ts`): an off-by-one, a stub to implement, an async ordering bug, a Python bug and a two-module task that exercises the parallel workers. Each fails before the change and passes after, so the harness and model can be validated on a bare machine. It is a smoke test, not a benchmark.
+Small dependency-free tasks (`src/eval/corpus.rs`), Python-based so a bare VPS with `python3` can run them: an off-by-one, a stub to implement, an order-losing bug, a whitespace bug and a two-module task that exercises the parallel workers. Three JavaScript variants are added when `node` is installed. Each fails before the change and passes after (a unit test enforces that). It is a smoke test, not a benchmark.
 
 ## Your own tasks, SWE-bench and Terminal-Bench
 

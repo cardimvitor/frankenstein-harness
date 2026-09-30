@@ -1,0 +1,433 @@
+use crate::config::{redact, Config, Env, StreamRedactor};
+use crate::engine::{Engine, Io, NoticeKind, PlanDecision, TaskOptions, TaskResult};
+use crate::session::checkpoint::Checkpoints;
+use crate::skills::reuse::ReuseOffer;
+use crate::skills::store::SkillStore;
+use crate::types::Mode;
+use async_trait::async_trait;
+use axum::body::Body;
+use axum::extract::{Request, State};
+use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode};
+use axum::middleware::{self, Next};
+use axum::response::sse::{Event, KeepAlive, Sse};
+use axum::response::{IntoResponse, Response};
+use axum::routing::{get, post};
+use axum::{Json, Router};
+use futures_util::StreamExt;
+use rand::RngCore;
+use serde_json::{json, Value};
+use std::collections::{HashMap, HashSet};
+use std::convert::Infallible;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+use tokio::sync::{broadcast, oneshot};
+use tokio_stream::wrappers::BroadcastStream;
+use tokio_util::sync::CancellationToken;
+
+/// Strict CSP: no inline script/style, no third-party origins, no framing, no form posts elsewhere.
+pub const CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; font-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
+
+const INDEX: &str = include_str!("../../web/index.html");
+const APP_JS: &str = include_str!("../../web/app.js");
+const STYLE: &str = include_str!("../../web/style.css");
+
+fn secret(n: usize) -> String {
+    let mut b = vec![0u8; n];
+    rand::rngs::OsRng.fill_bytes(&mut b);
+    use base64::Engine as _;
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(b)
+}
+
+fn safe_eq(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
+#[derive(Clone, Debug)]
+struct Ev {
+    id: u64,
+    kind: String,
+    data: Value,
+}
+
+/// Event log + pending questions; shared by the engine's Io and the HTTP handlers.
+pub struct Hub {
+    events: Mutex<Vec<Ev>>,
+    tx: broadcast::Sender<Ev>,
+    asks: Mutex<HashMap<String, (String, oneshot::Sender<Value>)>>,
+    next_id: Mutex<u64>,
+    progress: Mutex<StreamRedactor>,
+    reasoning: Mutex<StreamRedactor>,
+    env: Env,
+}
+
+impl Hub {
+    fn new(env: Env) -> Arc<Self> {
+        let (tx, _) = broadcast::channel(4096);
+        Arc::new(Hub { events: Mutex::new(vec![]), tx, asks: Mutex::new(HashMap::new()), next_id: Mutex::new(1), progress: Mutex::new(StreamRedactor::new(env.clone())), reasoning: Mutex::new(StreamRedactor::new(env.clone())), env })
+    }
+
+    fn push(&self, kind: &str, data: Value) {
+        let id = {
+            let mut n = self.next_id.lock().unwrap();
+            let id = *n;
+            *n += 1;
+            id
+        };
+        let ev = Ev { id, kind: kind.to_string(), data };
+        {
+            let mut e = self.events.lock().unwrap();
+            e.push(ev.clone());
+            if e.len() > 2000 {
+                e.remove(0);
+            }
+        }
+        let _ = self.tx.send(ev);
+    }
+
+    /// Emit an event; text held back for cross-chunk redaction is flushed first.
+    fn emit(&self, kind: &str, data: Value) {
+        let p = self.progress.lock().unwrap().flush();
+        let r = self.reasoning.lock().unwrap().flush();
+        if !p.is_empty() {
+            self.push("progress", json!({"d": p}));
+        }
+        if !r.is_empty() {
+            self.push("reasoning", json!({"d": r}));
+        }
+        self.push(kind, self.redact_value(data));
+    }
+
+    fn redact_value(&self, v: Value) -> Value {
+        serde_json::from_str(&redact(&v.to_string(), &self.env)).unwrap_or(Value::Null)
+    }
+
+    async fn ask(&self, kind: &str, payload: Value, default: Value) -> Value {
+        let id = secret(6);
+        let (tx, rx) = oneshot::channel();
+        self.asks.lock().unwrap().insert(id.clone(), (kind.to_string(), tx));
+        self.emit("ask", json!({"id": id, "kind": kind, "payload": payload}));
+        rx.await.unwrap_or(default)
+    }
+
+    fn answer(&self, id: &str, v: Value) -> bool {
+        match self.asks.lock().unwrap().remove(id) {
+            Some((_, tx)) => tx.send(v).is_ok(),
+            None => false,
+        }
+    }
+
+    fn cancel_asks(&self) {
+        for (_, (kind, tx)) in self.asks.lock().unwrap().drain() {
+            let _ = tx.send(match kind.as_str() {
+                "questions" => json!([]),
+                "plan" => json!({"ok": false}),
+                "confirm" => json!(false),
+                _ => json!([]),
+            });
+        }
+    }
+}
+
+pub struct WebIo {
+    hub: Arc<Hub>,
+}
+
+#[async_trait]
+impl Io for WebIo {
+    fn notice(&self, kind: NoticeKind, msg: &str) {
+        self.hub.emit("notice", json!({"kind": kind.as_str(), "message": msg}));
+    }
+    fn progress(&self, d: &str) {
+        let t = self.hub.progress.lock().unwrap().push(d);
+        if !t.is_empty() {
+            self.hub.push("progress", json!({"d": t}));
+        }
+    }
+    fn reasoning(&self, d: &str) {
+        let t = self.hub.reasoning.lock().unwrap().push(d);
+        if !t.is_empty() {
+            self.hub.push("reasoning", json!({"d": t}));
+        }
+    }
+    fn tool_start(&self, name: &str, args: &Value) {
+        self.hub.emit("tool_start", json!({"name": name, "args": args}));
+    }
+    fn tool_end(&self, name: &str, ok: bool, output: &str, ms: u64) {
+        let out: String = output.chars().take(6000).collect();
+        self.hub.emit("tool_end", json!({"name": name, "ok": ok, "output": out, "ms": ms}));
+    }
+    async fn ask_questions(&self, questions: Vec<String>) -> Vec<String> {
+        let v = self.hub.ask("questions", json!({"questions": questions}), json!([])).await;
+        v.as_array().map(|a| a.iter().map(|x| x.as_str().unwrap_or("").to_string()).collect()).unwrap_or_default()
+    }
+    async fn approve_plan(&self, plan: &str, trivial: bool) -> PlanDecision {
+        let v = self.hub.ask("plan", json!({"plan": plan, "trivial": trivial}), json!({"ok": false})).await;
+        PlanDecision { ok: v["ok"] == true, feedback: v["feedback"].as_str().map(|s| s.to_string()) }
+    }
+    async fn confirm(&self, tool: &str, args: &Value) -> bool {
+        self.hub.ask("confirm", json!({"tool": tool, "args": args}), json!(false)).await == json!(true)
+    }
+    async fn offer_reuse(&self, offers: &[ReuseOffer]) -> Vec<(String, Vec<String>)> {
+        let payload = json!({"offers": offers.iter().map(|o| json!({"fromProject": o.from_project, "fromLabel": o.from_label, "skills": o.skills.iter().map(|s| json!({"id": s.id, "name": s.name, "summary": s.summary})).collect::<Vec<_>>()})).collect::<Vec<_>>()});
+        let v = self.hub.ask("reuse", payload, json!([])).await;
+        v.as_array().map(|a| a.iter().filter_map(|p| Some((p["fromProject"].as_str()?.to_string(), p["ids"].as_array()?.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect()))).collect()).unwrap_or_default()
+    }
+}
+
+struct App {
+    cfg: Config,
+    hub: Arc<Hub>,
+    engine: Arc<Engine>,
+    sessions: Mutex<HashSet<String>>,
+    code: Mutex<String>,
+    failures: Mutex<u32>,
+    busy: Mutex<Option<CancellationToken>>,
+    last: Mutex<Option<String>>,
+    allowed_hosts: HashSet<String>,
+    log: Option<Arc<dyn Fn(&str) + Send + Sync>>,
+}
+
+pub struct WebServer {
+    pub url: String,
+    pub port: u16,
+    app: Arc<App>,
+    shutdown: Option<oneshot::Sender<()>>,
+}
+
+impl WebServer {
+    pub fn code(&self) -> String {
+        self.app.code.lock().unwrap().clone()
+    }
+    pub fn stop(&mut self) {
+        if let Some(s) = self.shutdown.take() {
+            let _ = s.send(());
+        }
+    }
+}
+
+impl Drop for WebServer {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
+fn hardened(mut r: Response) -> Response {
+    let h = r.headers_mut();
+    h.insert("content-security-policy", HeaderValue::from_static(CSP));
+    h.insert("x-content-type-options", HeaderValue::from_static("nosniff"));
+    h.insert("referrer-policy", HeaderValue::from_static("no-referrer"));
+    h.insert("cache-control", HeaderValue::from_static("no-store"));
+    h.insert("cross-origin-resource-policy", HeaderValue::from_static("same-origin"));
+    h.insert("cross-origin-opener-policy", HeaderValue::from_static("same-origin"));
+    r
+}
+
+fn err(status: StatusCode, msg: &str) -> Response {
+    hardened((status, Json(json!({"error": msg}))).into_response())
+}
+
+fn cookie_of(h: &HeaderMap) -> Option<String> {
+    let c = h.get(header::COOKIE)?.to_str().ok()?;
+    c.split(';').map(|p| p.trim()).find_map(|p| p.strip_prefix("fh_session=").map(|v| v.to_string()))
+}
+
+fn authed(app: &App, h: &HeaderMap) -> bool {
+    match cookie_of(h) {
+        Some(c) => app.sessions.lock().unwrap().iter().any(|s| safe_eq(s, &c)),
+        None => false,
+    }
+}
+
+/// Host/Origin/CSRF guard applied to every request; hardening headers on every response.
+async fn guard(State(app): State<Arc<App>>, req: Request, next: Next) -> Response {
+    let host = req.headers().get(header::HOST).and_then(|v| v.to_str().ok()).unwrap_or("").to_lowercase();
+    if !app.allowed_hosts.contains(&host) {
+        return err(StatusCode::FORBIDDEN, "bad host");
+    }
+    if let Some(origin) = req.headers().get(header::ORIGIN).and_then(|v| v.to_str().ok()) {
+        if origin != format!("http://{host}") {
+            return err(StatusCode::FORBIDDEN, "bad origin");
+        }
+    }
+    let is_api = req.uri().path().starts_with("/api/");
+    if is_api && req.method() == Method::POST {
+        let ct = req.headers().get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).unwrap_or("");
+        if req.headers().get("x-fh").and_then(|v| v.to_str().ok()) != Some("1") || !ct.starts_with("application/json") {
+            return err(StatusCode::FORBIDDEN, "bad request headers");
+        }
+    }
+    if is_api && req.method() == Method::OPTIONS {
+        return err(StatusCode::FORBIDDEN, "cors not supported");
+    }
+    hardened(next.run(req).await)
+}
+
+fn asset(body: &'static str, ct: &'static str) -> Response {
+    ([(header::CONTENT_TYPE, ct)], body).into_response()
+}
+
+async fn auth(State(app): State<Arc<App>>, Json(b): Json<Value>) -> Response {
+    let code = app.code.lock().unwrap().clone();
+    if b["code"].as_str().map(|c| safe_eq(c, &code)).unwrap_or(false) {
+        let token = secret(32);
+        app.sessions.lock().unwrap().insert(token.clone());
+        *app.code.lock().unwrap() = secret(9); // one-time: consumed
+        *app.failures.lock().unwrap() = 0;
+        let mut r = Json(json!({"ok": true})).into_response();
+        r.headers_mut().insert(header::SET_COOKIE, HeaderValue::from_str(&format!("fh_session={token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=86400")).unwrap());
+        return r;
+    }
+    let mut f = app.failures.lock().unwrap();
+    *f += 1;
+    if *f >= 5 {
+        let c = secret(9);
+        *app.code.lock().unwrap() = c.clone();
+        *f = 0;
+        if let Some(l) = &app.log {
+            l(&format!("too many failed logins; new code: {c}"));
+        }
+    }
+    err(StatusCode::UNAUTHORIZED, "invalid code")
+}
+
+async fn events(State(app): State<Arc<App>>, headers: HeaderMap, axum::extract::Query(q): axum::extract::Query<HashMap<String, String>>) -> Response {
+    if !authed(&app, &headers) {
+        return err(StatusCode::UNAUTHORIZED, "not authenticated");
+    }
+    let last: u64 = headers.get("last-event-id").and_then(|v| v.to_str().ok()).and_then(|s| s.parse().ok()).or_else(|| q.get("after").and_then(|s| s.parse().ok())).unwrap_or(0);
+    // subscribe before replaying so no event is lost in between
+    let rx = app.hub.tx.subscribe();
+    let backlog: Vec<Ev> = app.hub.events.lock().unwrap().iter().filter(|e| e.id > last).cloned().collect();
+    let max_replayed = backlog.last().map(|e| e.id).unwrap_or(last);
+    let to_event = |e: Ev| Ok::<Event, Infallible>(Event::default().id(e.id.to_string()).event(e.kind).data(e.data.to_string()));
+    let replay = futures_util::stream::iter(backlog.into_iter().map(to_event));
+    let live = BroadcastStream::new(rx).filter_map(move |r| async move { r.ok().filter(|e| e.id > max_replayed) }).map(to_event);
+    hardened(Sse::new(replay.chain(live)).keep_alive(KeepAlive::default()).into_response())
+}
+
+async fn state(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
+    if !authed(&app, &headers) {
+        return err(StatusCode::UNAUTHORIZED, "not authenticated");
+    }
+    let last = app.last.lock().unwrap().clone();
+    Json(json!({"busy": app.busy.lock().unwrap().is_some(), "cwd": app.engine.cwd.to_string_lossy(), "model": app.cfg.model, "last": last.map(|v| json!({"verdict": v}))})).into_response()
+}
+
+async fn activity(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
+    if !authed(&app, &headers) {
+        return err(StatusCode::UNAUTHORIZED, "not authenticated");
+    }
+    Json(app.engine.store.activity(50).into_iter().map(|a| json!({"ts": a.ts, "kind": a.kind, "skill": a.skill, "reason": a.reason})).collect::<Vec<_>>()).into_response()
+}
+
+async fn task(State(app): State<Arc<App>>, headers: HeaderMap, Json(b): Json<Value>) -> Response {
+    if !authed(&app, &headers) {
+        return err(StatusCode::UNAUTHORIZED, "not authenticated");
+    }
+    let Some(text) = b["task"].as_str().map(|s| s.trim().to_string()).filter(|s| !s.is_empty() && s.len() <= 20000) else { return err(StatusCode::BAD_REQUEST, "task required") };
+    let token = {
+        let mut busy = app.busy.lock().unwrap();
+        if busy.is_some() {
+            return err(StatusCode::CONFLICT, "a task is already running");
+        }
+        let t = CancellationToken::new();
+        *busy = Some(t.clone());
+        t
+    };
+    let auto = b["mode"] == "auto";
+    let approval = b["approval"].as_str().and_then(Mode::parse).unwrap_or(Mode::AutoEdit);
+    app.hub.emit("busy", json!({"busy": true, "task": text.chars().take(200).collect::<String>()}));
+    let a2 = app.clone();
+    let sandbox = b["sandbox"] == true;
+    tokio::spawn(async move {
+        let r: TaskResult = a2.engine.run_task(&text, TaskOptions { auto, approval, sandbox, cancel: Some(token), ..Default::default() }).await;
+        *a2.last.lock().unwrap() = Some(r.verdict.clone());
+        a2.hub.emit("result", r.to_json());
+        *a2.busy.lock().unwrap() = None;
+        a2.hub.emit("busy", json!({"busy": false}));
+        a2.engine.drain(20_000).await;
+    });
+    (StatusCode::ACCEPTED, Json(json!({"ok": true}))).into_response()
+}
+
+async fn answer(State(app): State<Arc<App>>, headers: HeaderMap, Json(b): Json<Value>) -> Response {
+    if !authed(&app, &headers) {
+        return err(StatusCode::UNAUTHORIZED, "not authenticated");
+    }
+    if app.hub.answer(b["id"].as_str().unwrap_or(""), b["value"].clone()) {
+        Json(json!({"ok": true})).into_response()
+    } else {
+        err(StatusCode::NOT_FOUND, "no such question")
+    }
+}
+
+async fn cancel(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
+    if !authed(&app, &headers) {
+        return err(StatusCode::UNAUTHORIZED, "not authenticated");
+    }
+    if let Some(t) = app.busy.lock().unwrap().as_ref() {
+        t.cancel();
+    }
+    app.hub.cancel_asks();
+    Json(json!({"ok": true})).into_response()
+}
+
+async fn undo(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
+    if !authed(&app, &headers) {
+        return err(StatusCode::UNAUTHORIZED, "not authenticated");
+    }
+    let is_repo = Checkpoints::new(app.engine.cwd.clone()).is_repo().await;
+    Json(json!({"ok": true, "note": if is_repo { "use the rolled-back patch in .fh/rejected or git; per-turn undo runs through the CLI (fh undo)" } else { "not a git repository" }})).into_response()
+}
+
+pub struct ServeOptions {
+    pub port: u16,
+    pub store: Option<SkillStore>,
+    pub log: Option<Arc<dyn Fn(&str) + Send + Sync>>,
+}
+
+pub async fn start_web_server(cfg: Config, env: Env, cwd: PathBuf, o: ServeOptions) -> anyhow::Result<WebServer> {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", o.port)).await?;
+    let port = listener.local_addr()?.port();
+    let hub = Hub::new(env.clone());
+    let store = match o.store {
+        Some(s) => s,
+        None => SkillStore::open(&env)?,
+    };
+    let engine = Arc::new(Engine::new(cfg.clone(), env, Arc::new(WebIo { hub: hub.clone() }), cwd, store));
+    let app = Arc::new(App {
+        cfg,
+        hub,
+        engine,
+        sessions: Mutex::new(HashSet::new()),
+        code: Mutex::new(secret(9)),
+        failures: Mutex::new(0),
+        busy: Mutex::new(None),
+        last: Mutex::new(None),
+        allowed_hosts: [format!("127.0.0.1:{port}"), format!("localhost:{port}")].into_iter().collect(),
+        log: o.log,
+    });
+    let router = Router::new()
+        .route("/", get(|| async { asset(INDEX, "text/html; charset=utf-8") }))
+        .route("/app.js", get(|| async { asset(APP_JS, "text/javascript; charset=utf-8") }))
+        .route("/style.css", get(|| async { asset(STYLE, "text/css; charset=utf-8") }))
+        .route("/api/auth", post(auth))
+        .route("/api/events", get(events))
+        .route("/api/state", get(state))
+        .route("/api/activity", get(activity))
+        .route("/api/task", post(task))
+        .route("/api/answer", post(answer))
+        .route("/api/cancel", post(cancel))
+        .route("/api/undo", post(undo))
+        .fallback(|| async { err(StatusCode::NOT_FOUND, "not found") })
+        .layer(middleware::from_fn_with_state(app.clone(), guard))
+        .layer(axum::extract::DefaultBodyLimit::max(1_000_000))
+        .with_state(app.clone());
+    let (tx, rx) = oneshot::channel::<()>();
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, router).with_graceful_shutdown(async move { let _ = rx.await; }).await;
+    });
+    let _ = Body::empty();
+    Ok(WebServer { url: format!("http://127.0.0.1:{port}/"), port, app, shutdown: Some(tx) })
+}

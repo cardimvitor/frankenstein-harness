@@ -2,7 +2,7 @@
 
 Frankenstein Harness runs model-generated commands with your privileges. Nothing here is a substitute for a disposable VM or container for untrusted repositories.
 
-## Local web UI checklist (all enforced in `src/ui/server.ts`, all tested in `test/web.test.ts` and by the live smoke test)
+## Local web UI checklist (all enforced in `src/ui/server.rs`, all tested in `tests/web.rs` and by the live smoke test)
 
 | Control | Implementation |
 |---|---|
