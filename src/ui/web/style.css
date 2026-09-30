@@ -1,0 +1,64 @@
+/* Design reference: Apple Human Interface Guidelines (clarity, hierarchy, consistency, accessibility, light/dark). */
+:root {
+  --bg: #f5f5f7; --surface: #ffffff; --surface-2: #f0f0f3; --text: #1d1d1f; --muted: #6e6e73; --border: #d2d2d7;
+  --accent: #0a66d8; --accent-text: #ffffff; --ok: #1a7f37; --warn: #9a6700; --bad: #c62828; --focus: #0a66d8;
+  --radius: 12px; --s1: 4px; --s2: 8px; --s3: 12px; --s4: 16px; --s5: 24px;
+  --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, Roboto, "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #000000; --surface: #1c1c1e; --surface-2: #2c2c2e; --text: #f5f5f7; --muted: #a1a1a6; --border: #3a3a3c; --accent: #4c9bff; --accent-text: #001a33; --ok: #4cd964; --warn: #ffb340; --bad: #ff6961; --focus: #4c9bff; }
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.5 var(--font); -webkit-font-smoothing: antialiased; }
+[hidden] { display: none !important; }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.muted { color: var(--muted); } .small { font-size: 13px; } .error { color: var(--bad); }
+:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; border-radius: 6px; }
+h1 { font-size: 24px; margin: 0 0 var(--s2); } h2 { font-size: 13px; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); margin: var(--s5) 0 var(--s2); }
+
+.login { min-height: 100%; display: grid; place-items: center; padding: var(--s4); }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: var(--s5); width: min(420px, 100%); display: grid; gap: var(--s3); }
+label { font-weight: 600; font-size: 14px; }
+input, textarea, select { font: inherit; color: var(--text); background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; width: 100%; }
+select { width: auto; padding: 8px 10px; }
+textarea { resize: vertical; min-height: 72px; }
+button { font: inherit; font-weight: 600; min-height: 44px; padding: 0 var(--s4); border-radius: 10px; border: 1px solid var(--border); background: var(--surface-2); color: var(--text); cursor: pointer; }
+button.primary { background: var(--accent); color: var(--accent-text); border-color: transparent; }
+button.danger { color: var(--bad); }
+button:disabled { opacity: .5; cursor: not-allowed; }
+
+.app { min-height: 100%; display: flex; flex-direction: column; }
+.bar { display: flex; flex-wrap: wrap; gap: var(--s3); align-items: center; justify-content: space-between; padding: var(--s3) var(--s4); background: var(--surface); border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 2; }
+.title { display: flex; gap: var(--s3); align-items: baseline; }
+.controls { display: flex; gap: var(--s2); align-items: center; flex-wrap: wrap; }
+.pill { padding: 4px 12px; border-radius: 999px; background: var(--surface-2); font-size: 13px; font-weight: 600; }
+.pill.busy { background: var(--accent); color: var(--accent-text); }
+.layout { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: var(--s4); padding: var(--s4); flex: 1; max-width: 1400px; width: 100%; margin: 0 auto; }
+.chat { display: flex; flex-direction: column; min-width: 0; }
+.timeline { list-style: none; margin: 0 0 var(--s4); padding: 0; display: grid; gap: var(--s3); align-content: start; flex: 1; }
+.side { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: var(--s2) var(--s4) var(--s4); align-self: start; }
+.list { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--s2); font-size: 14px; overflow-wrap: anywhere; }
+.list .ok { color: var(--ok); } .list .fail { color: var(--bad); } .list .skip { color: var(--muted); }
+
+.msg { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: var(--s3) var(--s4); overflow-wrap: anywhere; }
+.msg.user { background: var(--accent); color: var(--accent-text); border-color: transparent; justify-self: end; max-width: 85%; white-space: pre-wrap; }
+.msg.notice { background: transparent; border: none; padding: 0 var(--s2); color: var(--muted); font-size: 14px; }
+.msg.notice.skill { color: var(--warn); } .msg.notice.verify { color: var(--ok); } .msg.notice.warn { color: var(--bad); }
+.msg p { margin: 0 0 var(--s2); } .msg p:last-child { margin: 0; }
+.msg code { font-family: var(--mono); font-size: .9em; background: var(--surface-2); padding: 1px 5px; border-radius: 5px; }
+.msg pre { font-family: var(--mono); font-size: 13px; background: var(--surface-2); padding: var(--s3); border-radius: 8px; overflow: auto; margin: var(--s2) 0; white-space: pre; }
+.msg.final.pass { border-left: 4px solid var(--ok); } .msg.final.fail, .msg.final.error { border-left: 4px solid var(--bad); } .msg.final.unverified { border-left: 4px solid var(--warn); }
+details { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: var(--s2) var(--s4); }
+summary { cursor: pointer; font-size: 14px; color: var(--muted); min-height: 32px; display: flex; align-items: center; }
+details pre { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; margin: var(--s2) 0; max-height: 240px; overflow: auto; }
+.tool.fail summary { color: var(--bad); }
+.ask { border: 2px solid var(--accent); }
+.ask .actions { display: flex; gap: var(--s2); margin-top: var(--s3); flex-wrap: wrap; }
+.ask .field { display: grid; gap: var(--s1); margin-top: var(--s3); }
+.composer { position: sticky; bottom: 0; background: var(--bg); padding-top: var(--s2); display: grid; gap: var(--s2); }
+.composer .row { display: flex; justify-content: space-between; align-items: center; gap: var(--s3); flex-wrap: wrap; }
+
+@media (max-width: 860px) { .layout { grid-template-columns: 1fr; } .msg.user { max-width: 100%; } }
+@media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; scroll-behavior: auto !important; } }

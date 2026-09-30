@@ -17,6 +17,7 @@ export interface MockServer {
   queue: Scripted[];
   fallback?: (req: any) => Scripted;
   metrics: string;
+  metricsFn?: () => string;
   close(): Promise<void>;
 }
 
@@ -30,14 +31,20 @@ export async function startMock(opts: { apiKey?: string } = {}): Promise<MockSer
       res.writeHead(401).end(JSON.stringify({ error: { message: 'unauthorized' } }));
       return;
     }
-    if (req.url === '/metrics') { res.writeHead(200).end(m.metrics); return; }
-    if (req.url === '/v1/models') { res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ data: [{ id: 'mock-qwen', max_model_len: 32768 }] })); return; }
+    if (req.url === '/metrics') { res.writeHead(200).end(m.metricsFn ? m.metricsFn() : m.metrics); return; }
+    if (req.url === '/v1/models') {
+      if (req.headers.authorization === undefined && opts.apiKey === undefined && false) return; res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ data: [{ id: 'mock-qwen', max_model_len: 32768 }] })); return; }
     if (req.url === '/v1/chat/completions') {
       const body = JSON.parse(await readBody(req));
       m.requests.push(body);
       const s = m.queue.shift() ?? m.fallback?.(body) ?? { content: 'ok' };
       if (s.delayMs) await new Promise((r) => setTimeout(r, s.delayMs));
       if (s.status) { res.writeHead(s.status).end(JSON.stringify({ error: { message: 'scripted' } })); return; }
+      if (body.stream === false) {
+        const tcs = (s.tool_calls ?? []).map((tc, i) => ({ id: `c${i}`, type: 'function', function: { name: tc.name, arguments: typeof tc.args === 'string' ? tc.args : JSON.stringify(tc.args) } }));
+        res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: s.content ?? null, tool_calls: tcs.length ? tcs : undefined }, finish_reason: tcs.length ? 'tool_calls' : 'stop' }], usage: { prompt_tokens: 100, completion_tokens: 20 } }));
+        return;
+      }
       res.writeHead(200, { 'content-type': 'text/event-stream' });
       const send = (delta: object, finish: string | null = null) =>
         res.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`);

@@ -14,7 +14,11 @@ export function killTree(pid: number | undefined) {
 const SECRET_ENV = /key|token|secret|password|passwd|credential|auth/i;
 export function scrubbedEnv(env = process.env): NodeJS.ProcessEnv {
   const out: NodeJS.ProcessEnv = {};
-  for (const [k, v] of Object.entries(env)) if (k.startsWith('GIT_CONFIG_') || !SECRET_ENV.test(k)) out[k] = v;
+  for (const [k, v] of Object.entries(env)) {
+    // NODE_TEST_CONTEXT makes a nested `node --test` report to its parent runner and always exit 0.
+    if (k === 'NODE_TEST_CONTEXT') continue;
+    if (k.startsWith('GIT_CONFIG_') || !SECRET_ENV.test(k)) out[k] = v;
+  }
   return out;
 }
 

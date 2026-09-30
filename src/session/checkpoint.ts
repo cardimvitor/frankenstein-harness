@@ -22,7 +22,7 @@ export class Checkpoints {
   async create(label: string): Promise<string | undefined> {
     if (!(await this.isRepo())) return undefined;
     return this.withIndex(async (env) => {
-      const add = await run('git add -A', { cwd: this.cwd, env });
+      const add = await run('git add -A -- . \':(exclude).fh\'', { cwd: this.cwd, env });
       if (add.code !== 0) return undefined;
       const tree = (await run('git write-tree', { cwd: this.cwd, env })).stdout.trim();
       if (!tree) return undefined;
@@ -39,7 +39,7 @@ export class Checkpoints {
   /** Files changed between a checkpoint and the current working tree. */
   async changedSince(id: string): Promise<{ added: string[]; modified: string[]; deleted: string[] }> {
     return this.withIndex(async (env) => {
-      await run('git add -A', { cwd: this.cwd, env });
+      await run('git add -A -- . \':(exclude).fh\'', { cwd: this.cwd, env });
       const r = await run(`git diff --cached --name-status ${id} --`, { cwd: this.cwd, env });
       const out = { added: [] as string[], modified: [] as string[], deleted: [] as string[] };
       for (const l of r.stdout.split('\n').filter(Boolean)) {
@@ -53,7 +53,7 @@ export class Checkpoints {
   /** Unified diff of the working tree vs the checkpoint (new files included). */
   async diffSince(id: string): Promise<string> {
     return this.withIndex(async (env) => {
-      await run('git add -A', { cwd: this.cwd, env });
+      await run('git add -A -- . \':(exclude).fh\'', { cwd: this.cwd, env });
       return (await run(`git diff --cached --no-color -U3 ${id} --`, { cwd: this.cwd, env })).stdout;
     });
   }

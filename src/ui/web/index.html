@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Frankenstein Harness</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<main id="login" class="login" hidden>
+  <form id="login-form" class="card">
+    <h1>Frankenstein Harness</h1>
+    <p class="muted">Enter the one-time code printed in your terminal.</p>
+    <label for="code">Access code</label>
+    <input id="code" name="code" autocomplete="off" autocapitalize="off" spellcheck="false" required>
+    <p id="login-error" class="error" role="alert" hidden></p>
+    <button type="submit" class="primary">Continue</button>
+  </form>
+</main>
+
+<div id="app" class="app" hidden>
+  <header class="bar">
+    <div class="title"><strong>Frankenstein</strong><span id="model" class="muted"></span></div>
+    <div class="controls">
+      <label class="seg" aria-label="Run mode">
+        <span class="sr">Mode</span>
+        <select id="mode"><option value="normal">Guided</option><option value="auto">Autonomous</option></select>
+      </label>
+      <label class="seg" aria-label="Approval mode">
+        <span class="sr">Approvals</span>
+        <select id="approval"><option value="auto-edit">Auto-edit</option><option value="ask">Ask each time</option><option value="plan">Plan only (read-only)</option><option value="yolo">Full auto</option></select>
+      </label>
+      <span id="status" class="pill" role="status">Idle</span>
+    </div>
+  </header>
+
+  <div class="layout">
+    <section class="chat" aria-label="Conversation">
+      <ol id="timeline" class="timeline"></ol>
+      <form id="composer" class="composer">
+        <label for="task" class="sr">Task</label>
+        <textarea id="task" rows="3" placeholder="Describe the change you want…" required></textarea>
+        <div class="row">
+          <span class="muted small">Enter to send · Shift+Enter for a new line</span>
+          <span>
+            <button type="button" id="cancel" class="danger" hidden>Stop</button>
+            <button type="submit" id="send" class="primary">Send</button>
+          </span>
+        </div>
+      </form>
+    </section>
+    <aside class="side" aria-label="Details">
+      <h2>Verification</h2>
+      <ul id="verify" class="list"><li class="muted">No task yet</li></ul>
+      <h2>Changed files</h2>
+      <ul id="files" class="list"><li class="muted">None</li></ul>
+      <h2>Skill activity</h2>
+      <ul id="skills" class="list"><li class="muted">None yet</li></ul>
+    </aside>
+  </div>
+</div>
+<script src="/app.js" type="module"></script>
+</body>
+</html>

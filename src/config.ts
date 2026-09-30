@@ -110,3 +110,25 @@ export function redact(text: string, env = process.env): string {
   }
   return out;
 }
+
+/**
+ * Redacts secrets in a text stream where a secret may be split across chunks:
+ * the last (longest secret - 1) characters are held back until the next chunk or flush.
+ */
+export class StreamRedactor {
+  private buf = '';
+  private env: NodeJS.ProcessEnv;
+  constructor(env = process.env) { this.env = env; }
+  private get hold(): number {
+    return Math.max(0, ...Object.entries(this.env).filter(([k, v]) => v && v.length >= 8 && /key|token|secret|password|auth/i.test(k)).map(([, v]) => v!.length - 1));
+  }
+  push(chunk: string): string {
+    this.buf = redact(this.buf + chunk, this.env);
+    const hold = this.hold;
+    if (this.buf.length <= hold) return '';
+    const out = this.buf.slice(0, this.buf.length - hold);
+    this.buf = this.buf.slice(this.buf.length - hold);
+    return out;
+  }
+  flush(): string { const out = redact(this.buf, this.env); this.buf = ''; return out; }
+}
