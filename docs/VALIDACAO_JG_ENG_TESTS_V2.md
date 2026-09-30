@@ -10,6 +10,7 @@ Esta versão substitui a primeira (`docs/VALIDACAO_JG_ENG_TESTS.md`) e incorpora
 3. **Resolver antes de rodar e verificar.** Tudo que pode quebrar por ambiente ou configuração é resolvido e verificado antes da execução que conta. A falha de verificação do `fh` que a primeira versão apontava (não conhecer `scripts/test.sh`) já foi corrigida no próprio `fh` (seção 5.5).
 4. **Concorrência na primeira rodada.** Nada de ir direto a 20. Sobe até 5 exercícios em paralelo. Depois valida, degrau a degrau, se chega a 10 sem prejudicar o desempenho, e só sobe um degrau depois de confirmar que o anterior aguentou.
 5. **Teste final de capacidade, só do `fh`.** Ao final de tudo, começa com 20 sessões simultâneas e vai aumentando até onde o servidor aguenta. Mede o tok/s de cada atividade para calcular o tok/s médio por usuário e descobre a capacidade máxima em uso extremo, com outras técnicas de carga além da carga real (seção 8).
+6. **Quem julga a assertividade final é a LLM que conduz os testes, não o Qwen.** O juiz é você, a LLM operadora que está executando este prompt. O Frankenstein V2 (Qwen) aparece só como o modelo avaliado, dentro dos harnesses. Nada do que ele diz sobre o próprio trabalho entra na nota: nem o veredito interno do `fh`, nem o revisor LLM do `fh`, nem o "terminei, todos os testes passam" de qualquer harness. Esses sinais são registrados só como dados de comportamento, para comparar com o seu julgamento. Detalhes na seção 5.0b.
 
 Nomes usados aqui: **Frankenstein V2** é o modelo (Qwen3.8-27B NVFP4 + MTP=3 no vLLM). **Frankenstein Harness** (`fh`) é o nosso harness. Não confunda os dois no relatório.
 
@@ -34,7 +35,8 @@ Estimativa de tempo, para planejar: com N_MAX = 10, o pior caso (todos os exerc�
 5. Não mude a configuração do servidor entre harnesses. Se algo precisar mudar, rode como variante separada, com nome próprio, fora da comparação principal.
 6. Não grave chaves ou tokens em arquivo, log ou relatório. Nos logs, identifique chaves pelo SHA-256 truncado.
 7. Não altere nenhum arquivo do jg-eng-tests, nem os graders. Correções sugeridas vão só para o relatório.
-8. Um erro ou resultado estranho do nosso harness (`fh`) é um achado, não algo a esconder. Registre com evidência. Problemas encontrados *antes* da execução que conta (fase 0, pilotos) são corrigidos antes de começar (decisão 3): registre o commit do `fh` usado. Não corrija o `fh` no meio da comparação, porque isso invalidaria a execução. Se a correção for indispensável, termine a execução, corrija, e rode de novo como variante com nome próprio.
+8. O julgamento final (seção 5.0b) é feito só pela LLM operadora, com o grader oficial como base objetiva. É proibido usar o vLLM/Qwen, ou qualquer harness avaliado, para julgar, resumir ou classificar resultados. O operador também não usa o julgamento para ajudar os agentes: ele só acontece depois que o exercício terminou.
+9. Um erro ou resultado estranho do nosso harness (`fh`) é um achado, não algo a esconder. Registre com evidência. Problemas encontrados *antes* da execução que conta (fase 0, pilotos) são corrigidos antes de começar (decisão 3): registre o commit do `fh` usado. Não corrija o `fh` no meio da comparação, porque isso invalidaria a execução. Se a correção for indispensável, termine a execução, corrija, e rode de novo como variante com nome próprio.
 
 ## 1. Fase 0: preparação e sanidade (antes de qualquer harness)
 1. Clone o jg-eng-tests em `WORKDIR/src/jg-eng-tests` e confira o commit. Rode:
@@ -163,6 +165,28 @@ Prompt de tarefa, idêntico para todos:
 - Para cada item: reiniciar o vLLM, esperar ficar pronto, teste de fumaça, rodar os 130 exercícios, corrigir com o grader, parar o servidor.
 - Se um harness falhar em mais de 5 dos 10 primeiros exercícios por erro de infraestrutura, pare esse harness, marque UNSUPPORTED com evidência e siga para o próximo.
 
+### 5.0b Julgamento final (feito pela LLM operadora)
+A nota de cada exercício é decidida por você, a LLM que conduz os testes, em duas camadas. O modelo avaliado nunca participa.
+
+**Camada 1: grader oficial (objetiva).** `grader/run.py` na cópia final, como descrito na seção 5.0. Aprovado no grader é condição necessária.
+
+**Camada 2: revisão da LLM operadora (assertividade).** Para cada exercício aprovado pelo grader, e para uma amostra de 20% dos reprovados, leia o `git diff` final contra o commit "base" e o `CHALLENGE.md`. Decida se a entrega é legítima. Reprove, com o motivo registrado, se encontrar:
+- testes públicos, scripts (`scripts/*.sh`), `global.json`, `package.json` de teste ou configuração de lint alterados, apagados ou desativados para passar;
+- respostas fixas feitas para os casos de teste em vez da regra pedida;
+- API pública quebrada ou renomeada, contra o que o enunciado pede;
+- mudanças fora do escopo que introduzem risco: arquivos não relacionados reescritos, dependências novas sem motivo;
+- trechos que o próprio enunciado proíbe: segurança desligada, validação removida etc.
+
+A revisão é **cega**: um script do operador renomeia as entregas para códigos aleatórios (por exemplo `E017-H3`) e remove do diff tudo que identifica o harness, como `.fh/`, arquivos de sessão e comentários de assinatura. Só depois do julgamento de todos os harnesses o código é desfeito. Guarde a tabela de correspondência.
+
+**Resultado por exercício:** `aprovado` = grader aprovou **e** a revisão confirmou. Reporte três números por harness: aprovação no grader, aprovação final, e quantas aprovações do grader a revisão derrubou, com os motivos agrupados. O ranking principal usa a aprovação final. O ranking só pelo grader aparece ao lado, para comparar com as rodadas anteriores.
+
+**Nota de qualidade (0–5)** para toda entrega aprovada: clareza, aderência ao enunciado, testes adicionados, simplicidade. Rubrica fixa, escrita antes de ver a primeira entrega e guardada em `relatorio/rubrica.md`. Não entra no critério de aprovação, só no relatório.
+
+**Consistência do juiz.** Reavalie às cegas 10% das entregas, sorteadas com semente fixa, numa segunda passada separada da primeira, e reporte a concordância. Se ela ficar abaixo de 90%, revise a rubrica, reavalie tudo e registre.
+
+**O que o harness diz sobre si** (veredito interno do `fh`, revisor do `fh`, mensagens finais de "pronto" dos outros harnesses) vai para uma matriz "autoavaliação × julgamento final" por harness: quantas vezes disse que estava certo e não estava, e vice-versa.
+
 ### 5.0a Paralelização entre exercícios: rampa gradual até 10
 O objetivo é terminar o conjunto mais rápido, com vários exercícios ao mesmo tempo, sem estragar nem o desempenho nem a comparação. Nesta rodada o teto é 10; o uso extremo fica para a fase 7.
 
@@ -260,7 +284,7 @@ Pontos obrigatórios:
   - Com exercícios em paralelo, a ordem exata do aprendizado não é determinística; registre isso.
   - Ao terminar cada modo, guarde uma cópia de `WORKDIR/fh-state/<modo>/` e a saída de `fh activity` e `fh stats` (com `FH_HOME` apontando para ela).
   - Para os outros harnesses: se algum tiver memória persistente nativa (por exemplo, arquivos de memória por usuário), dê a ele o mesmo tratamento: um diretório de estado persistente por harness, vazio no início. Registre o que cada um tem.
-- **Sem `--keep` (decisão 1).** O que o `fh` deixar no disco ao terminar é a resposta dele: se a verificação interna reprovou e ele corrigiu, ótimo; se reprovou até o fim e ele desfez a mudança, a entrega é o estado original. Registre o `verdict` (`pass`/`fail`/`unverified`) e `rolledBack`. Como diagnóstico, fora da nota, aplique o patch rejeitado (o `rejectedPatch` do JSON é um caminho relativo a `/work`, dentro de `.fh/rejected/`) com `git apply` numa cópia separada e corrija essa cópia: isso mede quantas vezes o verificador do `fh` jogou fora trabalho que o grader aprovaria (falso negativo) e quantas vezes aprovou o que o grader reprovou (falso positivo).
+- **Sem `--keep` (decisão 1).** O que o `fh` deixar no disco ao terminar é a resposta dele: se a verificação interna reprovou e ele corrigiu, ótimo; se reprovou até o fim e ele desfez a mudança, a entrega é o estado original. Registre o `verdict` (`pass`/`fail`/`unverified`) e `rolledBack`. Como diagnóstico, fora da nota, aplique o patch rejeitado (o `rejectedPatch` do JSON é um caminho relativo a `/work`, dentro de `.fh/rejected/`) com `git apply` numa cópia separada e corrija essa cópia: isso mede quantas vezes o verificador do `fh` jogou fora trabalho que o julgamento final (seção 5.0b) aprovaria (falso negativo) e quantas vezes aprovou o que o julgamento final reprovou (falso positivo).
 - **Sem `--sandbox`** na comparação principal: o contêiner já isola todos os harnesses igualmente.
 - **Verificação com os scripts do exercício (decisão 3, já corrigido no `fh`).** Quando o repositório tem `scripts/test.sh`, o `fh` verifica com os scripts que o próprio repositório declara (`scripts/build.sh`, `typecheck.sh`, `lint.sh`, `test.sh`, na ordem, com `bash`), em vez de inferir `dotnet test` ou `npm test`. No jg-eng-tests isso dá `bash scripts/lint.sh` e `bash scripts/test.sh`. Confirme nos pilotos (fase 0, item 6). Se ainda aparecer comando inferido, pare e corrija antes da execução que conta.
 - Guarde o JSON de `--json`: rodadas de verificação, checks executados, workers, tokens, tool calls, chamadas reparadas ou malformadas, skills usadas (`skillsUsed`), aceitação do MTP.
@@ -280,7 +304,9 @@ Com `max-num-seqs` fixo, esse modo pode saturar; isso é resultado, não erro. R
 - **Qualidade:**
   - aprovado, nota (score/maximum), critérios aprovados por nível (mínimo, esperado, excelente);
   - erros de infraestrutura (fora do denominador, listados), timeouts;
-  - o `verdict` do próprio harness contra o grader (só para o `fh`).
+  - aprovação no grader, aprovação final (grader + revisão da LLM operadora) e aprovações derrubadas pela revisão, com os motivos;
+  - nota de qualidade 0–5 da LLM operadora;
+  - autoavaliação do harness (veredito interno do `fh`, declaração de conclusão dos outros) contra o julgamento final.
 - **Tempo:**
   - tempo de parede total do harness;
   - por exercício: média, mediana, P90;
@@ -312,7 +338,7 @@ Com `max-num-seqs` fixo, esse modo pode saturar; isso é resultado, não erro. R
 ## 7. Fase 6: análise e relatório
 
 ### Análise
-- **Ranking.** Taxa de aprovação com intervalo de Wilson de 95%.
+- **Ranking.** Taxa de aprovação final (grader + revisão da LLM operadora) com intervalo de Wilson de 95%. Ao lado, o ranking só pelo grader.
 - **Comparação pareada.** Exercício a exercício, entre cada par de harnesses: teste binomial exato bicaudal nos pares discordantes (McNemar exato) e intervalo de 95% da diferença de taxas por bootstrap pareado (10 000 reamostragens, semente fixa registrada). Corrija as comparações múltiplas por Holm. Não diga "melhor" sem apoio estatístico; use "sem diferença conclusiva" quando for o caso. Com 130 exercícios, diferenças de poucos pontos quase nunca são conclusivas; diga isso.
 - **Recortes.** Resultados por trilha, stack (.NET, React, Angular) e nível.
 - **Por tipo.** Exercícios cujo código inicial devolve `<unimplemented>` (contrato de saída implícito) contra os que já têm código real.
@@ -325,13 +351,13 @@ Com `max-num-seqs` fixo, esse modo pode saturar; isso é resultado, não erro. R
   - Taxa de aprovação na primeira metade contra a segunda metade do catálogo, e nos exercícios em que alguma skill aprendida foi usada contra os demais.
   - Quantas skills foram aprendidas, promovidas e postas em quarentena.
   - Não conclua causalidade: a ordem mistura dificuldade com aprendizado. Se houver tempo, uma variante com memória desligada (FH_HOME vazio por exercício) no mesmo modo isola o efeito; marque-a como variante.
-- **Verificador do `fh` (decisão 1).** Matriz veredito interno × grader, e quantos rollbacks jogaram fora trabalho aprovável.
+- **Verificador do `fh` (decisão 1).** Matriz veredito interno × julgamento final da LLM operadora, e quantos rollbacks jogaram fora trabalho que o julgamento final aprovaria.
 - **1 agente contra máximo.** Aplique a regra de fan-out do projeto (`docs/FANOUT.md`), que vale para exercícios em que houve divisão. O modo máximo compensa se não perder qualidade e se: (a) a mediana de tempo ficar ≤ 80% da do modo 1 agente, ou a aprovação subir pelo menos 5 pontos; e (b) os tokens sem cache por exercício aprovado ficarem ≤ 2× os do modo 1 agente. Mostre também o resultado para todos os 130.
 - **Com repetições.** Se houver repetições, reporte a média por exercício e a variância entre elas. As estatísticas pareadas usam a taxa média por exercício.
 - **Referência externa**, marcada como ambiente diferente e fora das estatísticas: a rodada anterior do Frankenstein V2 com harness caseiro (57,7%, temperatura 0,2) e os resultados do Claude Opus 5.5 (50,0%) e do Sonnet 5.5 (47,7%) no Claude Code.
 
 ### Avaliação independente das instruções e dos testes
-Só o operador lê os graders, e só depois das execuções. Por exercício, avalie:
+Feita pela LLM operadora, nunca pelo Qwen. Só o operador lê os graders, e só depois das execuções. Por exercício, avalie:
 - a clareza do enunciado;
 - se o formato de saída está especificado ou só implícito;
 - se o teste público verifica o que o grader privado exige (liste os critérios privados sem equivalente público);
