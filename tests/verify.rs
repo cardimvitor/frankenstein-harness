@@ -108,6 +108,22 @@ fn fingerprint_detects_stacks_and_verify_commands() {
     assert!(similarity(&fb.tokens, &fingerprint(c.path()).tokens) < 0.5);
 }
 
+#[test]
+fn declared_check_scripts_replace_autodetection() {
+    let d = repo(&[("src/App/App.csproj", "<Project Sdk=\"Microsoft.NET.Sdk\"></Project>"), ("tests/PublicTests/PublicTests.csproj", "<Project Sdk=\"Microsoft.NET.Sdk\"></Project>"), ("scripts/test.sh", "exit 0"), ("scripts/lint.sh", "exit 0"), ("scripts/setup.sh", "exit 0")]);
+    let v = fingerprint(d.path()).verify;
+    if cfg!(windows) {
+        assert!(v.iter().any(|c| c.name == "dotnet build"));
+    } else {
+        let names: Vec<&str> = v.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, vec!["scripts/lint", "scripts/test"]);
+        assert_eq!(v[1].cmd, "bash scripts/test.sh");
+    }
+    // a lint script alone does not replace the detected tests
+    let e = repo(&[("x/x.csproj", "<Project Sdk=\"Microsoft.NET.Sdk\"></Project>"), ("scripts/lint.sh", "exit 0")]);
+    assert!(fingerprint(e.path()).verify.iter().any(|c| c.name == "dotnet build"));
+}
+
 #[tokio::test]
 async fn verify_loop_fail_fix_pass_and_unverified() {
     let d = repo(&[("package.json", r#"{"scripts":{"test":"node check.js"}}"#), ("check.js", "process.exit(require('fs').readFileSync('v.txt','utf8').trim()==='ok'?0:1)"), ("v.txt", "bad")]);

@@ -181,6 +181,8 @@ impl SkillStore {
     }
 
     fn init(conn: Connection) -> Result<Self> {
+        // several fh processes may share one store (parallel tasks); wait for the lock instead of failing
+        conn.busy_timeout(std::time::Duration::from_secs(30))?;
         conn.execute_batch(
             "PRAGMA journal_mode=WAL;
              CREATE TABLE IF NOT EXISTS skills(id TEXT PRIMARY KEY, name TEXT, scope TEXT, stack TEXT, versions TEXT, project_id TEXT, source TEXT, origin TEXT, summary TEXT, keywords TEXT, body TEXT, version INTEGER, hash TEXT, state TEXT, created INTEGER, updated INTEGER);

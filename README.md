@@ -68,7 +68,7 @@ Precedence: defaults, then `~/.config/frankenstein-harness/config.json` (or the 
 }
 ```
 
-Override what gets verified with `.fh/verify.json`: `[{"name":"build","cmd":"dotnet build","kind":"build"},{"name":"test","cmd":"dotnet test","kind":"test"}]` (`kind`: build, types, lint, test). Autodetected: npm/pnpm/yarn scripts, .NET solutions/projects (+ tests), pytest or unittest, `go`, `cargo`.
+Override what gets verified with `.fh/verify.json`: `[{"name":"build","cmd":"dotnet build","kind":"build"},{"name":"test","cmd":"dotnet test","kind":"test"}]` (`kind`: build, types, lint, test). When the repository has `scripts/test.sh` (`.ps1` on Windows), its own `scripts/{build,typecheck,lint,test}` are used instead of autodetection. Autodetected otherwise: npm/pnpm/yarn scripts, .NET solutions/projects (+ tests), pytest or unittest, `go`, `cargo`.
 
 ## Commands
 

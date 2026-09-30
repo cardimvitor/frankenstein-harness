@@ -184,6 +184,25 @@ pub fn framework_cmds(sln: &str, has_tests: bool, windows: bool) -> Vec<VerifyCm
     }
 }
 
+/// The repository's own check scripts (`scripts/test.sh`, `scripts/lint.sh`, ...; `.ps1` on Windows).
+/// When a test script exists these are what the project says to run, so they replace autodetection.
+pub fn declared_scripts(cwd: &Path) -> Vec<VerifyCmd> {
+    let mut out = Vec::new();
+    for (stem, kind) in [("build", VerifyKind::Build), ("typecheck", VerifyKind::Types), ("lint", VerifyKind::Lint), ("test", VerifyKind::Test)] {
+        let cmd = if cfg!(windows) {
+            let p = format!("scripts/{stem}.ps1");
+            cwd.join(&p).is_file().then(|| format!("pwsh -NoProfile -File {p}"))
+        } else {
+            let p = format!("scripts/{stem}.sh");
+            cwd.join(&p).is_file().then(|| format!("bash {p}"))
+        };
+        if let Some(cmd) = cmd {
+            out.push(VerifyCmd { name: format!("scripts/{stem}"), cmd, kind });
+        }
+    }
+    out
+}
+
 pub fn detect_verify(cwd: &Path, files: &[String], pkg: &Option<Value>) -> Vec<VerifyCmd> {
     if let Some(Value::Array(a)) = read_json(&cwd.join(".fh").join("verify.json")) {
         let parsed: Vec<VerifyCmd> = a
@@ -200,6 +219,10 @@ pub fn detect_verify(cwd: &Path, files: &[String], pkg: &Option<Value>) -> Vec<V
             })
             .collect();
         return parsed;
+    }
+    let declared = declared_scripts(cwd);
+    if declared.iter().any(|v| v.kind == VerifyKind::Test) {
+        return declared;
     }
     let mut out = Vec::new();
     if let Some(scripts) = pkg.as_ref().and_then(|p| p.get("scripts")).and_then(|s| s.as_object()) {

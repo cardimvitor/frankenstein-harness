@@ -390,3 +390,28 @@ fn context_files_from_a_checkout_are_screened_for_prompt_injection() {
     let t = load_user_config_trusted(d.path(), true);
     assert!(t.rules.contains("Ignore all previous") && t.skills.len() == 2 && t.blocked.is_empty() && t.warned.len() == 2);
 }
+
+#[test]
+fn store_is_shared_by_concurrent_writers() {
+    let d = tempfile::tempdir().unwrap();
+    let path = d.path().join("skills.db");
+    fh::skills::store::SkillStore::open_path(&path).unwrap();
+    let hs: Vec<_> = (0..8)
+        .map(|i| {
+            let path = path.clone();
+            std::thread::spawn(move || {
+                let s = fh::skills::store::SkillStore::open_path(&path).unwrap();
+                for j in 0..50 {
+                    s.record_task(&format!("t{i}-{j}"), "p", &[], "pass", 1);
+                    s.log("test", "x", "concurrent", Some("p"));
+                }
+            })
+        })
+        .collect();
+    for h in hs {
+        h.join().unwrap();
+    }
+    let s = fh::skills::store::SkillStore::open_path(&path).unwrap();
+    let n: i64 = s.conn().query_row("SELECT COUNT(*) FROM tasks", [], |r| r.get(0)).unwrap();
+    assert_eq!(n, 400);
+}

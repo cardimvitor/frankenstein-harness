@@ -1,8 +1,15 @@
-# Prompt de execução: validação de harnesses com o Frankenstein V2 (jg-eng-tests)
-
-> Substituído por `docs/VALIDACAO_JG_ENG_TESTS_V2.md`, que traz as decisões do dono do projeto (resultado final do `fh`, aprendizado entre exercícios, rampa até 10, teste de capacidade). Use a V2.
+# Prompt de execução V2: validação de harnesses com o Frankenstein V2 (jg-eng-tests)
 
 Cole este documento inteiro numa sessão do Claude Code com terminal na máquina da GPU. Execute, não apenas descreva. Não invente resultados: o que não for medido fica NOT_RUN ou N/D, com o motivo.
+
+Esta versão substitui a primeira (`docs/VALIDACAO_JG_ENG_TESTS.md`) e incorpora as decisões abaixo.
+
+## Decisões do dono do projeto (valem acima de qualquer outra regra deste documento)
+1. **Vale o resultado final do `fh`.** Se ele avaliou errado e corrigiu antes de responder, isso é mérito do harness. Corrija o que ele deixar no disco ao terminar, sem `--keep`. Se ele desfizer a própria mudança, a resposta dele foi essa.
+2. **O `fh` pode aprender entre exercícios.** A memória de skills é parte do harness e está sendo validada junto. O estado dele persiste de um exercício para o outro dentro do mesmo modo, e qualquer outro harness com memória persistente nativa recebe o mesmo tratamento.
+3. **Resolver antes de rodar e verificar.** Tudo que pode quebrar por ambiente ou configuração é resolvido e verificado antes da execução que conta. A falha de verificação do `fh` que a primeira versão apontava (não conhecer `scripts/test.sh`) já foi corrigida no próprio `fh` (seção 5.5).
+4. **Concorrência na primeira rodada.** Nada de ir direto a 20. Sobe até 5 exercícios em paralelo. Depois valida, degrau a degrau, se chega a 10 sem prejudicar o desempenho, e só sobe um degrau depois de confirmar que o anterior aguentou.
+5. **Teste final de capacidade, só do `fh`.** Ao final de tudo, começa com 20 sessões simultâneas e vai aumentando até onde o servidor aguenta. Mede o tok/s de cada atividade para calcular o tok/s médio por usuário e descobre a capacidade máxima em uso extremo, com outras técnicas de carga além da carga real (seção 8).
 
 Nomes usados aqui: **Frankenstein V2** é o modelo (Qwen3.8-27B NVFP4 + MTP=3 no vLLM). **Frankenstein Harness** (`fh`) é o nosso harness. Não confunda os dois no relatório.
 
@@ -11,23 +18,23 @@ Nomes usados aqui: **Frankenstein V2** é o modelo (Qwen3.8-27B NVFP4 + MTP=3 no
 - GPU: `<ex.: RTX PRO 6000 Blackwell 96 GB>`
 - WORKDIR: `<ex.: /workspace/harness-eval>` (precisa de ~150 GB livres: 6 execuções × 130 cópias com node_modules e bin/obj)
 - FRANKENSTEIN_HARNESS: repositório https://github.com/cardimvitor/frankenstein-harness, branch `ccr-3bc51f62-prkdq0`. Compilar com `cargo build --release` e usar `target/release/fh`. Registre o commit.
-- EXERCICIOS_EM_PARALELO: rampa 4 → 8 → 12 → 16 → 20, com teto N_MAX = 20 (seção 5.0a). A escala de rampa é a mesma para todos os harnesses
+- EXERCICIOS_EM_PARALELO: rampa gradual 2 → 3 → 4 → 5; depois 6 → 7 → 8 → 9 → 10, um degrau por vez e só se o anterior não prejudicou o desempenho. O teto N_MAX sai da calibração e vale no máximo 10 nesta rodada (seção 5.0a). A escala é a mesma para todos os harnesses
 - TIMEOUT_POR_EXERCICIO: 900 s de parede, contando do início do harness até o processo terminar
 - REPETICOES: 1 (3 se houver tempo, só para os 2 melhores harnesses)
 - AMOSTRAGEM: temperatura 1,0, top_p 0,95, top_k 20, igual para todos e imposta pelo proxy (seção 2)
-- EXECUTAR_ATE: fase `<0 a 6>`
+- EXECUTAR_ATE: fase `<0 a 7>` (a 7 é o teste de capacidade do `fh`)
 
-Estimativa de tempo, para planejar: com a rampa até 20 em paralelo, o pior caso (todos os exercícios estourando o timeout) cai de ~8 h para ~2 h por harness, ou ~12 h para as 6 execuções, mais a calibração. O normal fica bem abaixo disso. A sessão precisa conseguir retomar sem refazer o que já terminou (seção 4.0).
+Estimativa de tempo, para planejar: com N_MAX = 10, o pior caso (todos os exercícios estourando o timeout) fica em ~3,5 h por harness, ou ~21 h para as 6 execuções, mais a calibração (~2 h) e o teste de capacidade (~4–8 h). O normal fica bem abaixo disso. A sessão precisa conseguir retomar sem refazer o que já terminou (seção 4.0).
 
 ## 0. Regras que valem a sessão inteira
-1. Os agentes avaliados só veem a pasta `exercise/` de cada desafio. Nunca `solution/`, `grader/`, `EVALUATION.md`, o `.git` do jg-eng-tests, outros exercícios ou resultados de outros harnesses. Você (operador) nunca resolve exercício, nunca dá dica e nunca cola conteúdo do grader em prompt.
+1. Os agentes avaliados só veem a pasta `exercise/` de cada desafio. Nunca `solution/`, `grader/`, `EVALUATION.md`, o `.git` do jg-eng-tests, as pastas de outros exercícios ou resultados de outros harnesses. A única exceção é a memória interna do próprio harness (decisão 2): o que ele aprendeu sozinho nos exercícios anteriores, nunca a nota do grader. Você (operador) nunca resolve exercício, nunca dá dica e nunca cola conteúdo do grader em prompt.
 2. Um modelo só: o Frankenstein V2 servido pelo nosso vLLM. Nenhum harness pode chamar modelo externo. Bloqueie a saída de rede dos agentes (só o proxy local é alcançável) e prove pelos logs do proxy e do firewall que 100% das chamadas de modelo foram para o vLLM local.
 3. Mesmo prompt de tarefa para todos os harnesses, mesmo timeout, a mesma escala de concorrência de exercícios (a rampa da seção 5.0a, amarrada à posição do exercício no catálogo), mesma amostragem, mesma ordem de exercícios (a do `catalog.json`).
-4. Cada harness roda num vLLM recém-iniciado (processo novo, cache vazio). O mesmo vale entre os dois modos do Frankenstein Harness.
+4. Cada harness roda num vLLM recém-iniciado (processo novo, cache vazio). O mesmo vale entre os dois modos do Frankenstein Harness. A memória do harness começa vazia no início de cada harness e de cada modo.
 5. Não mude a configuração do servidor entre harnesses. Se algo precisar mudar, rode como variante separada, com nome próprio, fora da comparação principal.
 6. Não grave chaves ou tokens em arquivo, log ou relatório. Nos logs, identifique chaves pelo SHA-256 truncado.
 7. Não altere nenhum arquivo do jg-eng-tests, nem os graders. Correções sugeridas vão só para o relatório.
-8. Um erro ou resultado estranho do nosso harness (`fh`) é um achado, não algo a esconder. Registre com evidência. Não corrija o `fh` no meio da comparação: isso invalidaria a execução. Se a correção for indispensável, termine a execução, corrija, e rode de novo como variante com nome próprio.
+8. Um erro ou resultado estranho do nosso harness (`fh`) é um achado, não algo a esconder. Registre com evidência. Problemas encontrados *antes* da execução que conta (fase 0, pilotos) são corrigidos antes de começar (decisão 3): registre o commit do `fh` usado. Não corrija o `fh` no meio da comparação, porque isso invalidaria a execução. Se a correção for indispensável, termine a execução, corrija, e rode de novo como variante com nome próprio.
 
 ## 1. Fase 0: preparação e sanidade (antes de qualquer harness)
 1. Clone o jg-eng-tests em `WORKDIR/src/jg-eng-tests` e confira o commit. Rode:
@@ -54,6 +61,14 @@ Estimativa de tempo, para planejar: com a rampa até 20 em paralelo, o pior caso
 
    Registre o digest da imagem. Para o exercício 29, os agentes não têm Docker dentro do contêiner, e isso vale igual para todos. Marque-o como "limitado pelo ambiente" e reporte o resultado com e sem ele.
 4. Ambiente do grader: o mesmo .NET 10.0.401 e Node 24.15.0, fora do contêiner dos agentes, numa pasta que só o operador acessa. Registre as versões. Os relatórios anteriores do Claude usaram .NET 10.0.112; anote a diferença.
+5. **Ensaio geral sem modelo (decisão 3). Bloqueia a fase se algo falhar.** Para os 130 exercícios, dentro da imagem de execução:
+   1. Copie `exercise/` e rode `setup.sh` com rede.
+   2. Depois, **sem rede**, rode `test.sh` e `lint.sh` no estado inicial. Os dois precisam executar até o fim, sem erro de ambiente: pacote faltando, SDK errado, restore tentando ir à rede, permissão. Falhar nos testes é o esperado, porque o exercício ainda não foi feito.
+   3. Rode o grader sobre essa cópia inicial: ele precisa rodar e reprovar.
+   4. Copie a `solution/` por cima de uma cópia descartável (só o operador faz isso, fora de qualquer pasta de agente) e confira que `test.sh` e `lint.sh` passam, sem rede.
+
+   Registre a tabela exercício × (setup, test inicial, lint inicial, grader inicial, test e lint com a referência). Cada falha de ambiente é corrigida na imagem ou no procedimento antes de continuar; nunca nos arquivos do exercício. Um exercício que não pode ser consertado assim sai do denominador, listado com o motivo.
+6. **Verificação do `fh` antes de rodar.** Compile o `fh` no commit escolhido e rode `cargo test --release`: tudo precisa passar. Rode `fh doctor` contra o proxy. Nos pilotos, confirme no JSON de `--json` (`verify.rounds[].checks[].name`) que o `fh` verificou com `scripts/lint` e `scripts/test`, e não com `dotnet test` ou `npm test` inferidos.
 
 ## 2. Fase 1: servidor, configuração validada do Frankenstein V2
 Base: Qwen3.8-27B em NVFP4 (checkpoint `nvidia/Qwen3.8-27B-NVFP4`, revisão `dbb8f445`) com MTP=3, vLLM 0.29.0 ou superior, CUDA 13.x. Resultado de referência nessa configuração: 122,1 tok/s por fluxo (52,2 sem MTP) e aceitação do draft de 75,7%.
@@ -77,8 +92,8 @@ Notas:
 - `max-model-len`: 131072 se couber na GPU; mínimo 65536. Na rodada anterior, 32768 estourou num exercício, e Claude Code e OpenCode têm prompt de sistema grande. Registre o valor usado e use o mesmo valor em `FH_CONTEXT_WINDOW` (seção 5.5).
 - Se o servidor travar ao iniciar com MTP no Blackwell (SM120), aplique a correção que resolveu antes: `--quantization modelopt_fp4 --block-size 128` com `VLLM_HAS_FLASHINFER_CUBIN=1`. Registre qual foi usado.
 - Confira cada flag com `vllm serve --help` da versão instalada; não use sintaxe de memória. Se `--override-generation-config` não existir, use o equivalente da versão e registre. De qualquer forma, o proxy impõe a amostragem (seção 3), porque os harnesses mandam os próprios valores por requisição e o padrão do servidor não os sobrescreve.
-- `max-num-seqs`: 16 foi validado na PRO 5000, mas com até 20 exercícios em paralelo (e o modo máximo do `fh` abrindo vários workers por exercício), 16 vira fila na hora. Suba para 64 na PRO 6000 de 96 GB. Na calibração (seção 5.0a), confira no `/metrics` se o uso de KV cache passa de 95% ou se há preempções. Se passar, reduza para 48 ou 32 e registre. Uma vez escolhido, o valor é fixo para todos os harnesses.
-- Com MTP, o ganho da especulação cai quando o lote cresce: a GPU deixa de estar ociosa entre tokens. É por isso que a rampa mede tok/s e aceitação a cada degrau. Se a calibração mostrar que acima de certo N o MTP piora o agregado, registre como achado. Não desligue o MTP no meio: isso seria uma variante separada.
+- `max-num-seqs`: 16 foi validado na PRO 5000, mas com até 10 exercícios em paralelo (e o modo máximo do `fh` abrindo vários workers por exercício), 16 vira fila na hora. Suba para 64 na PRO 6000 de 96 GB. Na calibração (seção 5.0a), confira no `/metrics` se o uso de KV cache passa de 95% ou se há preempções. Se passar, reduza para 48 ou 32 e registre. Uma vez escolhido, o valor é fixo para todos os harnesses.
+- Com MTP, o ganho da especulação cai quando o lote cresce: a GPU deixa de estar ociosa entre tokens. É por isso que a rampa mede tok/s e aceitação a cada degrau. Se a calibração mostrar que acima de certo N o MTP piora o agregado, registre como achado. Não desligue o MTP na comparação principal; isso é testado como variante na fase 7.
 - Reinício "limpo" = matar o processo, esperar a VRAM voltar ao repouso no `nvidia-smi`, subir de novo e esperar `GET /v1/models` responder. O cache de prefixo morre com o processo; não é preciso mais nada.
 - Teste de fumaça, a cada reinício e antes de cada harness:
   1. Uma chamada simples.
@@ -129,7 +144,7 @@ Teste o proxy antes da fase 4:
    - `git init`, seguido de um commit único "base" (autor fixo). O `fh` precisa de um repositório git para checkpoints e diffs, e os outros harnesses também usam `git status`/`git diff`. Esse `.git` novo contém só o conteúdo do exercício; o `.git` do jg-eng-tests nunca é copiado.
    - `scripts/setup.sh`, **com rede** e **antes** de o agente começar (`npm ci` / `dotnet restore`), para que o agente rode sem rede. Use um cache de NuGet/npm por harness montado em modo leitura depois do setup. Se o setup falhar, é erro de infraestrutura daquele exercício, não do harness.
 2. Verificação por script, que bloqueia a fase se falhar. Nenhuma cópia pode conter `solution/`, `grader/`, `EVALUATION.md`, nenhum arquivo cujo hash coincida com um arquivo de `solution/` ou `grader/` que não exista também em `exercise/`, e nenhum `.git` com mais de um commit. Guarde a saída.
-3. Cada exercício roda em contêiner próprio e descartável, com a cópia montada em `/work`, que também é o diretório de trabalho. Nada mais do disco do host fica montado, fora o cache de pacotes (só leitura) e a configuração do harness (só leitura). Assim, "só pode ler e escrever dentro da sua pasta" vale para qualquer harness, inclusive para comandos de shell. Sessão nova e contexto isolado por exercício: diretório de estado do harness vazio a cada exercício (seção 5.5 para o `fh`).
+3. Cada exercício roda em contêiner próprio e descartável, com a cópia montada em `/work`, que também é o diretório de trabalho. Nada mais do disco do host fica montado, fora o cache de pacotes (só leitura), a configuração do harness (só leitura) e o diretório de memória persistente do harness (decisão 2; seção 5.5 para o `fh`). Assim, "só pode ler e escrever dentro da sua pasta" vale para qualquer harness, inclusive para comandos de shell. Cada exercício é uma sessão nova, com a conversa isolada; só a memória que o próprio harness mantém passa de um exercício para o outro.
 4. Os graders ficam em `WORKDIR/src/jg-eng-tests`, fora de qualquer montagem dos agentes.
 
 Prompt de tarefa, idêntico para todos:
@@ -148,12 +163,12 @@ Prompt de tarefa, idêntico para todos:
 - Para cada item: reiniciar o vLLM, esperar ficar pronto, teste de fumaça, rodar os 130 exercícios, corrigir com o grader, parar o servidor.
 - Se um harness falhar em mais de 5 dos 10 primeiros exercícios por erro de infraestrutura, pare esse harness, marque UNSUPPORTED com evidência e siga para o próximo.
 
-### 5.0a Paralelização entre exercícios: rampa até 20
-O objetivo é fazer o conjunto inteiro terminar mais rápido, rodando vários exercícios ao mesmo tempo, sem estragar a comparação. Duas partes:
+### 5.0a Paralelização entre exercícios: rampa gradual até 10
+O objetivo é terminar o conjunto mais rápido, com vários exercícios ao mesmo tempo, sem estragar nem o desempenho nem a comparação. Nesta rodada o teto é 10; o uso extremo fica para a fase 7.
 
 **1. Calibração (uma vez, antes do primeiro harness, fora da comparação).**
-- Servidor recém-iniciado, com o `fh` no modo 1 agente e os primeiros 40 exercícios do catálogo. Essas execuções não contam e são descartadas.
-- Degraus de concorrência de exercícios: 4, 8, 12, 16, 20. Cada degrau dura pelo menos 10 minutos ou 8 exercícios concluídos, o que vier por último. Um exercício novo só entra quando outro termina, para manter N constante no degrau.
+- Servidor recém-iniciado, com o `fh` no modo 1 agente e os primeiros 60 exercícios do catálogo. Essas execuções não contam, e a memória do `fh` usada aqui é descartada.
+- Degraus de concorrência de exercícios: 1 (linha de base), 2, 3, 4, 5, 6, 7, 8, 9, 10. Cada degrau dura pelo menos 8 minutos ou 5 exercícios concluídos, o que vier por último. Um exercício novo só entra quando outro termina, para manter N constante.
 - No fim de cada degrau, imprima e grave em `WORKDIR/calibracao.csv`:
   - tok/s de saída por fluxo: mediana e P10;
   - tok/s agregado: saída total ÷ tempo do degrau;
@@ -161,30 +176,33 @@ O objetivo é fazer o conjunto inteiro terminar mais rápido, rodando vários ex
   - uso de KV cache, média e pico, e preempções;
   - TTFT P50 e P90;
   - aceitação do MTP;
+  - uso de CPU e RAM do host (builds de .NET e Node em paralelo competem por CPU);
   - potência média da GPU;
   - erros e timeouts.
-- **Critério de parada da rampa.** Pare de subir, e fique no último degrau bom como N_MAX, se no degrau seguinte acontecer qualquer um destes:
-  - o agregado ganhar menos de 10% em relação ao degrau anterior;
-  - o tok/s mediano por fluxo cair abaixo de 40% do medido com 4 em paralelo;
-  - o KV cache passar de 95% de forma sustentada, ou aparecerem preempções;
-  - o TTFT P90 passar de 30 s;
-  - surgir qualquer erro 5xx ou falta de memória.
+- **De 1 a 5:** sobe um degrau de cada vez. Só para antes de 5 se aparecer erro 5xx, falta de memória, preempção ou KV cache acima de 95%.
+- **De 5 a 10** ("chega a 10 sem prejudicar o desempenho?"): só suba para N+1 se, no degrau N, valerem **todas** estas condições em relação ao degrau 1:
+  - o tok/s mediano por fluxo continua ≥ 70% do valor do degrau 1;
+  - o TTFT P90 não passou de 2× o do degrau 1 nem de 15 s;
+  - o KV cache ficou abaixo de 90%, sem preempções;
+  - a CPU do host ficou abaixo de 90% em média (senão o gargalo são os builds, e mais paralelismo não ajuda);
+  - nenhum erro 5xx, falta de memória ou timeout de exercício a mais do que no degrau 1.
 
-  Se nada disso acontecer, N_MAX = 20. Registre a decisão com os números no relatório: tabela e gráfico de tok/s por fluxo e agregado contra N.
+  O primeiro degrau que violar uma condição é descartado, e N_MAX = o último degrau que cumpriu todas. Se todos cumprirem, N_MAX = 10.
+- Registre a decisão com os números: tabela e gráfico de tok/s por fluxo e agregado contra N, marcando o degrau que parou a rampa e o motivo.
 
 **2. Execução principal (todos os harnesses, mesma escala).**
-- A concorrência depende da posição do exercício no catálogo, não do harness:
-  - exercícios 1–10: 4 em paralelo;
-  - 11–20: 8;
-  - 21–30: 12;
-  - 31–40: 16;
-  - 41–130: N_MAX, no máximo 20.
+- A concorrência depende da posição do exercício no catálogo, não do harness. Ela sobe como na calibração, sem pular degraus:
+  - exercícios 1–4: 2 em paralelo;
+  - 5–8: 3;
+  - 9–12: 4;
+  - 13–16: 5;
+  - e daí +1 a cada 4 exercícios até N_MAX, onde fica até o exercício 130.
 
-  Se N_MAX ficou abaixo de 20, os degraus acima dele são pulados. Assim cada exercício roda, em todos os harnesses, sob a mesma concorrência de exercícios, e a comparação exercício a exercício continua justa.
-- Durante a execução, a cada degrau e depois a cada 10 exercícios concluídos, imprima a mesma linha de números da calibração, com o harness e o N atual, e grave-a em `WORKDIR/runs/<harness>/tps.csv`.
-- Freio de segurança. Se, durante a execução de um harness, aparecer erro 5xx, falta de memória ou KV cache acima de 98% por mais de 2 minutos, pare de lançar exercícios novos até a fila esvaziar e depois continue no mesmo N. Nunca mude a configuração do servidor. Registre cada acionamento, com horário; é resultado do harness.
-- O timeout continua 900 s de parede em todos os degraus. Se a calibração mostrar que o tok/s por fluxo em N_MAX cai para menos da metade do de N=4, reporte a taxa de timeout por degrau e mostre separadamente os exercícios que estouraram o tempo nos degraus altos.
-- O modo máximo do `fh` soma workers aos exercícios paralelos: com 20 exercícios, pode haver bem mais de 20 requisições ao mesmo tempo. Não reduza o N desse modo; a disputa pela GPU é o custo do fan-out e aparece como fila no relatório.
+  Assim cada exercício roda, em todos os harnesses, com a mesma concorrência, e a comparação exercício a exercício continua justa.
+- A cada degrau e depois a cada 10 exercícios concluídos, imprima a mesma linha de números da calibração, com o harness e o N atual, e grave-a em `WORKDIR/runs/<harness>/tps.csv`.
+- **Freio de segurança.** Se, durante um harness, aparecer erro 5xx, falta de memória ou KV cache acima de 95% por mais de 2 minutos, pare de lançar exercícios novos até a fila esvaziar e continue no mesmo N. Nunca mude o servidor, e registre cada acionamento com o horário; isso é resultado do harness. Se o freio acionar três vezes no mesmo harness, avise no relatório que N_MAX foi alto demais para aquele harness.
+- O timeout continua 900 s de parede em todos os degraus. Reporte a taxa de timeout por degrau.
+- O modo máximo do `fh` soma workers aos exercícios em paralelo: com N_MAX exercícios pode haver bem mais requisições simultâneas. Não reduza o N desse modo; a disputa pela GPU é o custo do fan-out e aparece como fila no relatório.
 
 ### 5.1 OpenCode
 Provedor OpenAI-compatível (`@ai-sdk/openai-compatible`) apontando para `http://<proxy>:8001/v1`, modelo `frankenstein-v2`, com a chave do exercício. Confira a sintaxe de provedor customizado e do modo não interativo (`opencode run`) na documentação da versão instalada. Use as mesmas permissões da rodada anterior: bash restrito a `scripts/test.sh`, `lint.sh`, `setup.sh`, `git status`/`git diff` e `pwd`; sem web, sem subagentes, sem skills. Desligue compartilhamento e atualização automática. Registre a configuração exata (sem a chave).
@@ -231,15 +249,21 @@ FH_CONFIG_HOME=/fh-config \
 FH_HOME=/fh-state \
 FH_API_KEY=<chave do exercício> \
 FH_METRICS_URL=http://<proxy>:8001/metrics \
-fh run --auto --yes --mode yolo --keep --json --cwd /work "<prompt de tarefa>"
+fh run --auto --yes --mode yolo --json --cwd /work "<prompt de tarefa>"
 ```
 
 Pontos obrigatórios:
-- **`FH_HOME` vazio por exercício**: `/fh-state` é um tmpfs do contêiner, fora de `/work`, para não aparecer no diff nem na correção. O `fh` aprende skills e guarda sessões ali. Compartilhar esse diretório entre exercícios contaminaria a comparação.
-- **`--keep`**: por padrão o `fh` desfaz as mudanças quando a própria verificação reprova. Os outros harnesses sempre deixam o trabalho no disco. Com `--keep`, o grader vê o que o agente fez. Registre o `verdict` do `fh` (`pass`/`fail`/`unverified`) e quantas vezes o `fh` reprovou algo que o grader aprovou, e vice-versa. Essa é a medida de qualidade do verificador.
+- **Memória persistente entre exercícios (decisão 2).**
+  - `/fh-state` é montado de `WORKDIR/fh-state/<modo>/`, com leitura e escrita, compartilhado por todos os exercícios daquele modo e fora de `/work`, para não aparecer no diff nem na correção.
+  - Começa vazio no início de cada modo; o modo 1 agente não passa memória para o modo máximo.
+  - Vários `fh` em paralelo escrevem no mesmo banco de skills. O `fh` espera até 30 s pelo lock do SQLite (testado com 8 escritores simultâneos), então isso é suportado.
+  - Com exercícios em paralelo, a ordem exata do aprendizado não é determinística; registre isso.
+  - Ao terminar cada modo, guarde uma cópia de `WORKDIR/fh-state/<modo>/` e a saída de `fh activity` e `fh stats` (com `FH_HOME` apontando para ela).
+  - Para os outros harnesses: se algum tiver memória persistente nativa (por exemplo, arquivos de memória por usuário), dê a ele o mesmo tratamento: um diretório de estado persistente por harness, vazio no início. Registre o que cada um tem.
+- **Sem `--keep` (decisão 1).** O que o `fh` deixar no disco ao terminar é a resposta dele: se a verificação interna reprovou e ele corrigiu, ótimo; se reprovou até o fim e ele desfez a mudança, a entrega é o estado original. Registre o `verdict` (`pass`/`fail`/`unverified`) e `rolledBack`. Como diagnóstico, fora da nota, aplique o patch rejeitado (o `rejectedPatch` do JSON é um caminho relativo a `/work`, dentro de `.fh/rejected/`) com `git apply` numa cópia separada e corrija essa cópia: isso mede quantas vezes o verificador do `fh` jogou fora trabalho que o grader aprovaria (falso negativo) e quantas vezes aprovou o que o grader reprovou (falso positivo).
 - **Sem `--sandbox`** na comparação principal: o contêiner já isola todos os harnesses igualmente.
-- Guarde o JSON de `--json`: rodadas de verificação, checks executados, workers, tokens, tool calls, chamadas reparadas ou malformadas, aceitação do MTP.
-- **Achado a observar no piloto:** o `fh` infere os comandos de verificação pelo tipo de projeto (`dotnet build/test`, `npm test` etc.). Ele não conhece `scripts/test.sh`, que aqui roda um programa de console e não um projeto de teste. Registre quais checks ele rodou e se algum falhou por comando errado. Não mude o `fh` durante a execução (regra 8).
+- **Verificação com os scripts do exercício (decisão 3, já corrigido no `fh`).** Quando o repositório tem `scripts/test.sh`, o `fh` verifica com os scripts que o próprio repositório declara (`scripts/build.sh`, `typecheck.sh`, `lint.sh`, `test.sh`, na ordem, com `bash`), em vez de inferir `dotnet test` ou `npm test`. No jg-eng-tests isso dá `bash scripts/lint.sh` e `bash scripts/test.sh`. Confirme nos pilotos (fase 0, item 6). Se ainda aparecer comando inferido, pare e corrija antes da execução que conta.
+- Guarde o JSON de `--json`: rodadas de verificação, checks executados, workers, tokens, tool calls, chamadas reparadas ou malformadas, skills usadas (`skillsUsed`), aceitação do MTP.
 
 ### 5.6 Frankenstein Harness, modo máximo de agentes
 Mesmo comando, com `maxConcurrency: 16` (o teto de workers por exercício, independente do `max-num-seqs`). Isso não força 16 agentes. É o teto: o planejador divide a tarefa em até 16 subtarefas com arquivos disjuntos, só quando elas são independentes. O regulador começa com 2 simultâneos e sobe conforme o `/metrics`. Também podem surgir workers "extra" para arquivos que ninguém possuía e um corretor por diretório em rodadas de reparo. Todos ficam restritos à pasta, pelo contêiner.
@@ -265,7 +289,7 @@ Com `max-num-seqs` fixo, esse modo pode saturar; isso é resultado, não erro. R
   - entrada, cache, entrada sem cache, saída e raciocínio (estimado);
   - total por exercício e por harness;
   - tokens por exercício aprovado, total e sem cache.
-- **Velocidade por degrau de concorrência (4, 8, 12, 16, 20):**
+- **Velocidade por degrau de concorrência (1 a N_MAX):**
   - tok/s por fluxo e agregado, fila, KV cache, TTFT, aceitação do MTP e potência, em cada degrau e por harness;
   - a curva de tok/s agregado contra N é o gráfico principal desta parte.
 - **Velocidade:**
@@ -277,10 +301,12 @@ Com `max-num-seqs` fixo, esse modo pode saturar; isso é resultado, não erro. R
   - turnos, requisições, chamadas de ferramenta, tool calls malformadas;
   - execuções de `test.sh`/`lint.sh`, contadas nos logs do harness ou nos comandos registrados;
   - exercícios que terminaram sem declarar conclusão ou sem nenhuma mudança;
+  - `fh`: veredito interno, rodadas de verificação, rollbacks, skills aprendidas e skills usadas por exercício;
   - agentes por exercício (Frankenstein Harness);
   - tentativas de rede bloqueadas.
 - **Hardware:**
   - uso médio e de pico de GPU, VRAM, potência média, temperatura;
+  - CPU e RAM do host por degrau, para separar gargalo de GPU de gargalo de build;
   - energia por harness (integral da potência no tempo) e energia por exercício aprovado.
 
 ## 7. Fase 6: análise e relatório
@@ -291,10 +317,15 @@ Com `max-num-seqs` fixo, esse modo pode saturar; isso é resultado, não erro. R
 - **Recortes.** Resultados por trilha, stack (.NET, React, Angular) e nível.
 - **Por tipo.** Exercícios cujo código inicial devolve `<unimplemented>` (contrato de saída implícito) contra os que já têm código real.
 - **Escala.** O que a paralelização entre exercícios rendeu:
-  - tempo total de parede real contra o estimado se todos tivessem rodado com 4 em paralelo (soma das durações ÷ 4);
+  - tempo total de parede real contra o de rodar um exercício por vez (soma das durações);
   - tok/s agregado e por fluxo por degrau;
   - onde a curva achata e o motivo: KV cache, fila ou queda da aceitação do MTP.
   - Diga também se a aprovação mudou entre degraus. Como os degraus seguem a ordem do catálogo, qualquer diferença mistura dificuldade com concorrência. Aponte a confusão e não conclua causalidade.
+- **Aprendizado do `fh` (decisão 2).**
+  - Taxa de aprovação na primeira metade contra a segunda metade do catálogo, e nos exercícios em que alguma skill aprendida foi usada contra os demais.
+  - Quantas skills foram aprendidas, promovidas e postas em quarentena.
+  - Não conclua causalidade: a ordem mistura dificuldade com aprendizado. Se houver tempo, uma variante com memória desligada (FH_HOME vazio por exercício) no mesmo modo isola o efeito; marque-a como variante.
+- **Verificador do `fh` (decisão 1).** Matriz veredito interno × grader, e quantos rollbacks jogaram fora trabalho aprovável.
 - **1 agente contra máximo.** Aplique a regra de fan-out do projeto (`docs/FANOUT.md`), que vale para exercícios em que houve divisão. O modo máximo compensa se não perder qualidade e se: (a) a mediana de tempo ficar ≤ 80% da do modo 1 agente, ou a aprovação subir pelo menos 5 pontos; e (b) os tokens sem cache por exercício aprovado ficarem ≤ 2× os do modo 1 agente. Mostre também o resultado para todos os 130.
 - **Com repetições.** Se houver repetições, reporte a média por exercício e a variância entre elas. As estatísticas pareadas usam a taxa média por exercício.
 - **Referência externa**, marcada como ambiente diferente e fora das estatísticas: a rodada anterior do Frankenstein V2 com harness caseiro (57,7%, temperatura 0,2) e os resultados do Claude Opus 5.5 (50,0%) e do Sonnet 5.5 (47,7%) no Claude Code.
@@ -311,7 +342,7 @@ Só o operador lê os graders, e só depois das execuções. Por exercício, ava
 Use também o sinal empírico: critérios que nenhum harness passou e critérios que falham só por formato. Termine com uma classificação (claro, ambíguo, defeituoso) e sugestões de correção por exercício.
 
 ### Entregáveis em `WORKDIR/relatorio/`
-1. `relatorio.md` e `relatorio.txt` com toda a análise e todos os números. Primeira seção: resumo de uma página com o ranking, a comparação 1 agente × máximo e a lista de NOT_RUN/UNSUPPORTED.
+1. `relatorio.md` e `relatorio.txt` com toda a análise e todos os números. Primeira seção: resumo de uma página com o ranking, a comparação 1 agente × máximo, N_MAX, a capacidade máxima medida na fase 7 e a lista de NOT_RUN/UNSUPPORTED.
 2. `relatorio.pdf` com tabelas e gráficos: ranking com intervalos, tokens, tempo e velocidade por harness, aprovação por trilha/stack/nível, tok/s por fluxo e agregado contra o número de exercícios em paralelo (calibração e cada harness), e 1 agente × máximo.
 3. `results.csv` e `results.json` por exercício e harness, os logs do proxy, do `/metrics` e do `nvidia-smi`, e os JSONs do grader.
 4. `MANIFEST.json`:
@@ -319,7 +350,77 @@ Use também o sinal empírico: critérios que nenhum harness passou e critérios
    - versões (vLLM, CUDA, driver, cada harness, LiteLLM se usado, .NET, Node, pwsh, language servers, digest da imagem);
    - o comando exato do servidor e as flags de fallback usadas;
    - amostragem imposta, `max-model-len`, `max-num-seqs` final, N_MAX e a escala de rampa usada;
+   - as variantes de servidor da fase 7, cada uma com o comando exato;
    - método de identificação por harness, regra de firewall;
    - horários de início e fim de cada fase e de cada harness.
+
+## 8. Fase 7: teste de capacidade do `fh` em uso extremo (depois de tudo)
+Objetivo (decisão 5): quantos usuários simultâneos o servidor aguenta com o `fh`, e com que tok/s por usuário. Isso fica fora da comparação entre harnesses, então aqui **é permitido** testar variantes de servidor, cada uma com nome próprio e servidor reiniciado.
+
+**Definições.**
+- **Usuário** = uma sessão do `fh` resolvendo um exercício. Cada usuário recebe uma cópia nova de um exercício, percorrendo o catálogo em ciclo. Use o modo 1 agente como carga principal, e depois repita os degraus principais no modo máximo.
+- **tok/s de uma atividade** = tokens de saída de uma requisição ÷ (duração − TTFT), do log do proxy.
+- **tok/s por usuário:**
+  - durante a geração: média do tok/s das requisições daquele usuário, ponderada pelos tokens;
+  - efetivo: saída total da sessão ÷ tempo de parede da sessão, que inclui o tempo de ferramentas e de build.
+
+  Reporte os dois: o primeiro mede o servidor, o segundo o que o usuário sente.
+- **tok/s médio por usuário no degrau** = média e mediana entre os usuários do degrau, com P10 e P90.
+
+**Técnica 1: carga real com agentes (principal).**
+- Servidor de referência (a mesma configuração da comparação) recém-iniciado, com a memória do `fh` vazia.
+- **Degraus:** começa com **20 usuários ao mesmo tempo**, todos lançados juntos. Depois: 24, 28, 32, 40, 48, 56, 64, 80, 96, 128, e segue dobrando enquanto não parar.
+- Cada degrau dura pelo menos 15 minutos em carga constante: quando um usuário termina, outro entra na hora.
+- Todos os exercícios concluídos são corrigidos pelo grader, para ver se a qualidade cai sob carga.
+- Grave por degrau:
+  - usuários ativos;
+  - tok/s por usuário (os dois tipos) com média, mediana, P10 e P90;
+  - tok/s agregado do servidor;
+  - TTFT P50/P90/P99, fila (rodando e esperando), KV cache e preempções, aceitação do MTP;
+  - CPU e RAM do host, GPU, potência e temperatura;
+  - erros, timeouts de 900 s, taxa de aprovação no grader.
+- **Pare de subir** quando acontecer qualquer um destes:
+  - taxa de erro acima de 1%;
+  - falta de memória ou queda do servidor;
+  - tok/s mediano por usuário (durante a geração) abaixo de 5;
+  - TTFT P90 acima de 60 s;
+  - timeouts acima de 25%;
+  - GPU acima de 90 °C por mais de 1 minuto.
+
+  O último degrau cumprido é o limite.
+- **Capacidade em três níveis**, cada um com o N e os números:
+  1. **Confortável:** tok/s mediano por usuário ≥ 20, P10 ≥ 10, TTFT P90 ≤ 10 s, zero erros e aprovação sem queda significativa em relação à comparação principal (teste binomial).
+  2. **Aceitável:** tok/s mediano por usuário ≥ 10, TTFT P90 ≤ 30 s, erros < 1%, timeouts < 10%.
+  3. **Limite:** o último degrau antes do critério de parada.
+
+  Se 20 já não for confortável, desça em degraus de 4 (16, 12, 8) até achar o confortável.
+
+**Técnica 2: repetição das sessões gravadas (isola o servidor).**
+- Com os logs do proxy da comparação principal (requisições completas do `fh`, com os intervalos reais entre elas), escreva um reprodutor que dispara N sessões gravadas ao mesmo tempo. Os degraus são os mesmos da técnica 1 e continuam além do limite dela, até 256 ou até quebrar.
+- Mande os mesmos prompts com os tempos originais entre chamadas, sem executar ferramentas nem builds. Isso tira a CPU do caminho e mostra o limite só do servidor.
+- A diferença entre o limite das técnicas 1 e 2 mostra quanto do limite vem do host (builds) e quanto vem da GPU.
+
+**Técnica 3: carga sintética padronizada.**
+- Use `vllm bench serve` da versão instalada (confira as opções em `--help`), com distribuições de tamanho de entrada e saída iguais às medidas nos logs, prefixo compartilhado igual ao observado, e `--max-concurrency` em 1, 8, 16, 32, 64, 128 e 256.
+- Faça também uma varredura por taxa de chegada (`--request-rate`) até saturar, para encontrar a vazão máxima sustentável em req/s e tok/s.
+- Esses números são comparáveis com outros servidores e outras GPUs.
+
+**Técnica 4: pico súbito.** De 0 para o limite "aceitável" de uma vez. Meça quanto tempo leva até o TTFT estabilizar e se há erros ou preempções no pico.
+
+**Técnica 5: resistência.** 60 minutos contínuos no nível "confortável". Procure degradação ao longo do tempo: tok/s caindo, VRAM ou RAM subindo, temperatura, erros tardios.
+
+**Variantes de servidor (cada uma reiniciada e medida com as técnicas 2 e 3, e com a técnica 1 nos degraus perto do limite):**
+- `max-num-seqs` 128 e 256;
+- `gpu-memory-utilization` 0.95;
+- MTP com `num_speculative_tokens` 1 e sem MTP (sob lote grande, a especulação pode render menos que o custo);
+- `max-model-len` 65536 (mais sequências cabem no KV cache);
+- `max-num-batched-tokens` maior ou menor e o chunked prefill da versão instalada.
+
+Confira cada flag em `vllm serve --help`. Registre para cada variante a capacidade confortável e o limite, e diga qual configuração maximiza usuários confortáveis e qual maximiza a vazão agregada. Podem não ser a mesma.
+
+**Entregável da fase 7:** `WORKDIR/relatorio/capacidade.md` e seção própria no PDF, com:
+- gráficos de tok/s por usuário (mediana e P10) e tok/s agregado contra usuários simultâneos, para cada técnica e variante;
+- a tabela de capacidade em três níveis;
+- a recomendação final: quantos usuários simultâneos do `fh` a GPU aguenta com conforto, com qual configuração e com que tok/s médio por usuário.
 
 Ao atingir qualquer limite (tempo, disco, fase em EXECUTAR_ATE), gere o relatório com o que foi medido e liste o que ficou NOT_RUN ou UNSUPPORTED, com o motivo.
