@@ -123,3 +123,32 @@ fn swebench_adapter_builds_task_dirs_from_instances() {
     let idx: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(out.join("INDEX.json")).unwrap()).unwrap();
     assert_eq!(idx["converted"][0], "acme__lib-1");
 }
+
+#[test]
+fn polyglot_adapter_builds_verified_tasks_and_hides_the_reference_solution() {
+    let root = tempfile::tempdir().unwrap();
+    let ex = root.path().join("bench/python/exercises/practice/hello");
+    std::fs::create_dir_all(ex.join(".docs")).unwrap();
+    std::fs::create_dir_all(ex.join(".meta")).unwrap();
+    std::fs::write(ex.join(".docs/instructions.md"), "# Instructions\n\nReturn the greeting `Hello, World!`.\n").unwrap();
+    std::fs::write(ex.join(".meta/config.json"), r#"{"files":{"solution":["hello.py"],"test":["hello_test.py"],"example":[".meta/example.py"]}}"#).unwrap();
+    std::fs::write(ex.join(".meta/example.py"), "def hello():\n    return 'Hello, World!'\n").unwrap();
+    std::fs::write(ex.join("hello.py"), "def hello():\n    pass\n").unwrap();
+    std::fs::write(ex.join("hello_test.py"), "import unittest\nfrom hello import hello\n\nclass T(unittest.TestCase):\n    def test_it(self):\n        self.assertEqual(hello(), 'Hello, World!')\n").unwrap();
+    let out = root.path().join("out");
+    let script = format!("{}/scripts/polyglot_to_tasks.py", env!("CARGO_MANIFEST_DIR"));
+    let r = Command::new("python3").args([&script, "--repo", root.path().join("bench").to_str().unwrap(), "--langs", "python", "--out", out.to_str().unwrap(), "--verify"]).output().unwrap();
+    assert!(r.status.success(), "{}{}", String::from_utf8_lossy(&r.stdout), String::from_utf8_lossy(&r.stderr));
+    let t = out.join("polyglot-python-hello");
+    assert!(t.join("repo/hello_test.py").exists() && !t.join("repo/.meta").exists() && !t.join("repo/.docs").exists(), "reference solution and docs must not be in repo/");
+    let tasks = load_tasks(&out);
+    assert_eq!(tasks.len(), 1);
+    assert!(tasks[0].prompt.contains("Hello, World!") && tasks[0].prompt.contains("hello.py") && tasks[0].prompt.contains("Do not modify the test files"));
+    assert!(tasks[0].tags.contains(&"polyglot".to_string()));
+    // an exercise whose oracle already passes on the stub is dropped by --verify
+    std::fs::write(ex.join("hello.py"), "def hello():\n    return 'Hello, World!'\n").unwrap();
+    let out2 = root.path().join("out2");
+    let r = Command::new("python3").args([&script, "--repo", root.path().join("bench").to_str().unwrap(), "--langs", "python", "--out", out2.to_str().unwrap(), "--verify"]).output().unwrap();
+    assert!(!r.status.success());
+    assert!(String::from_utf8_lossy(&r.stderr).contains("passes on the stub"));
+}
