@@ -112,7 +112,13 @@ pub async fn run_one(cfg: &Config, env: &Env, t: &EvalTask, runner: &str, rep: u
     let cwd = materialize(t).await;
     let t0 = Instant::now();
     let mut row = EvalRow { id: t.id.clone(), runner: runner.into(), rep, ..Default::default() };
-    if runner == "fh" {
+    if runner.starts_with("fh") {
+        // "fh-single" = the same harness with worker fan-out disabled: isolates what orchestration adds on this model
+        let mut cfg = cfg.clone();
+        if runner == "fh-single" {
+            cfg.max_concurrency = 1;
+        }
+        let cfg = &cfg;
         let engine = Engine::new(cfg.clone(), env.clone(), Arc::new(HeadlessIo { log: None }), cwd.clone(), SkillStore::in_memory());
         let r = engine.run_task(&t.prompt, TaskOptions { auto: true, approval: Mode::Yolo, no_mine: true, ..Default::default() }).await;
         row.verdict = Some(r.verdict.clone());
@@ -179,7 +185,7 @@ pub fn summarize(rows: &[EvalRow]) -> String {
     ];
     for rn in &runners {
         let rs: Vec<&EvalRow> = rows.iter().filter(|r| &r.runner == rn).collect();
-        let is_fh = rn == "fh";
+        let is_fh = rn.starts_with("fh");
         let calls = sum_u(rs.iter().map(|r| r.tool_calls));
         let na = || "n/a".to_string();
         lines.push(format!(
@@ -229,7 +235,8 @@ pub async fn run_eval(cfg: &Config, env: &Env, o: EvalOptions) -> i32 {
     if let Some(l) = o.limit {
         tasks.truncate(l);
     }
-    let runners: Vec<&str> = if o.runner == "both" { vec!["fh", "qwen"] } else { vec![o.runner.as_str()] };
+    // both = fh vs plain Qwen Code; all = also fh-single (orchestration off) to measure what the workers add
+    let runners: Vec<&str> = match o.runner.as_str() { "both" => vec!["fh", "qwen"], "all" => vec!["fh", "fh-single", "qwen"], "orch" => vec!["fh", "fh-single"], r => vec![r] };
     let stamp = chrono_stamp();
     let dir = o.out.join(format!("eval-{stamp}"));
     let _ = std::fs::create_dir_all(&dir);

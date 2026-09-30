@@ -5,7 +5,9 @@
 ```bash
 fh eval --runner fh            # Frankenstein Harness only
 fh eval --runner qwen          # plain Qwen Code baseline (needs `qwen` on PATH)
-fh eval --runner both --repeat 3 --tasks eval/tasks --out reports
+fh eval --runner both --repeat 3 --tasks eval/tasks --out reports   # fh vs plain Qwen Code
+fh eval --runner orch                                                # fh vs fh-single (worker fan-out off): does orchestration help?
+fh eval --runner all --repeat 3                                      # all three
 ```
 
 ## What is measured per run

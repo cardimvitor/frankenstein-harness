@@ -89,16 +89,22 @@ step "vLLM measurements (this is the long part)"
 $FH validate-vllm $QUICK --out "$OUT" 2>&1 | tee "$OUT/validate-vllm.log"
 [ "${PIPESTATUS[0]}" -eq 0 ] || FAILED+=("validate-vllm")
 
-RUNNER=fh
+RUNNER=orch   # fh vs fh-single (worker fan-out off): decides whether orchestration stays on
 if [ "$BASELINE" = 1 ]; then
-  if command -v qwen >/dev/null 2>&1; then RUNNER=both
-  elif command -v npm >/dev/null 2>&1 && npm install -g @qwen-code/qwen-code --loglevel=error >"$OUT/qwen-install.log" 2>&1; then RUNNER=both
+  if command -v qwen >/dev/null 2>&1; then RUNNER=all
+  elif command -v npm >/dev/null 2>&1 && npm install -g @qwen-code/qwen-code --loglevel=error >"$OUT/qwen-install.log" 2>&1; then RUNNER=all
   else echo "plain Qwen Code baseline unavailable (needs Node/npm and \`npm i -g @qwen-code/qwen-code\`); running fh only"; fi
-  [ "$RUNNER" = both ] && qwen --version 2>&1 | head -1 | sed 's/^/baseline qwen-code /'
+  [ "$RUNNER" = all ] && qwen --version 2>&1 | head -1 | sed 's/^/baseline qwen-code /'
 fi
 command -v python3 >/dev/null 2>&1 || echo "WARNING: python3 not found; the built-in eval tasks need it (or pass --tasks with your own)"
-step "eval: Frankenstein Harness$([ "$RUNNER" = both ] && echo " vs plain Qwen Code") (repeat $REPEAT)"
+step "eval: fh vs fh-single$([ "$RUNNER" = all ] && echo " vs plain Qwen Code") (repeat $REPEAT)"
 $FH eval --tasks "$TASKS" --runner "$RUNNER" --repeat "$REPEAT" --out "$OUT" 2>&1 | tee "$OUT/eval.log"
+
+if command -v python3 >/dev/null 2>&1 && python3 -c "import pty" 2>/dev/null; then
+  step "TUI smoke test (real pseudo-terminal against a scripted mock model)"
+  python3 scripts/tui-smoke.py 2>&1 | tee "$OUT/tui-smoke.txt"
+  [ "${PIPESTATUS[0]}" -eq 0 ] || FAILED+=("tui smoke")
+fi
 
 step "web UI smoke test (real HTTP, loopback only)"
 PORT=$((20000 + RANDOM % 20000))

@@ -295,3 +295,21 @@ Test status: 62 automated tests (mock vLLM, no model needed), the web UI driven 
 - Terminal prompts are line-based (Enter to accept), not raw single-key.
 - Not built: MCP client, LSP diagnostics as a verifier input (compiler/test output is used instead), hooks, session resume, LLM-based context summarization (deterministic pruning only), opt-in telemetry, mTLS/OIDC auth, .NET 11 pack (not released), and version packs beyond the seven listed.
 - Reviewer false-positive rate can only be measured with an oracle (the eval does this); the built-in corpus is five smoke tasks, not SWE-bench or Terminal-Bench.
+
+## 18. Changes since section 17 (2026-09-30, later)
+
+Finished from the "partially done" and "not done" lists:
+
+- **Terminal UI** (`src/tui/`): full-screen ratatui interface next to the plain CLI and the web UI. Streaming chat, collapsible thinking, tool cards, plan/question/approval/reuse modals, verification and changed-files and skills panels, approval-mode and Autonomous toggles, scrolling, help. Tested as a state machine, rendered with a test backend, driven end to end through the engine, and smoke-tested in a real pseudo-terminal (`scripts/tui-smoke.py`).
+- **Single-key terminal prompts** in the plain CLI (unix termios), hidden input for secrets.
+- **"Patch applies cleanly"** is now a real check (`git apply --check` against a temporary index of the base tree).
+- **IMPROVE** is wired: after a verified task that needed rework, the used learned skill may be sharpened (rate-limited, data-only validation, versioned, rollback-able). Built-ins stay immutable.
+- **HIG vs project design system**: detection of design systems (component libraries, Tailwind, Storybook, tokens, documented guidelines); strong signal follows the project and stores a project skill; UI code without a design system asks once in guided mode and follows the existing patterns in Autonomous; new projects use the HIG-based default.
+- **Per-task token budget** (`maxTaskTokens`) stops verification rounds and says so.
+- **Runtime verifier statistics** (`fh stats`) and **skill version history** (`fh history`, web panel), plus a web **workspace tree**.
+- **OS keychain** for the API key (`fh auth`), used automatically when the environment variable is not set.
+- **Version packs** checked against official sources (`docs/VERSIONS.md`); .NET pack now covers 11; licence status recorded.
+- **Orchestration evaluation**: `fh eval --runner orch|all` compares fan-out workers with a single agent (and plain Qwen Code), and `SUMMARY.md` grades it. The multi-agent path is kept only if it wins on the real model.
+- **vLLM deployment for RTX 6000 Blackwell**: `deploy/vllm/serve.sh` profiles, an A/B plan, and rule-based "Suggested vLLM and harness changes" in every validation summary.
+
+The remaining work, with a plan per item and the decisions needed from you, is `docs/ROADMAP.md`. The known-gaps list in 17.3 is superseded by it (terminal prompts are now single-key on unix; Codex CLI and Hermes studies are roadmap item Q).

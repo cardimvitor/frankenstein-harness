@@ -2,11 +2,11 @@
 name: dotnet-8-10
 scope: stack
 stack: dotnet
-versions: 8,9,10
+versions: 8,9,10,11
 keywords: dotnet csharp aspnet core minimal api ef core dependency injection appsettings nullable async records linq blazor net8 net9 net10
 summary: Modern .NET 8/10 (LTS) conventions: SDK-style projects, DI, EF Core, minimal APIs, nullable reference types.
 ---
-- SDK-style projects: files are globbed automatically; do not list Compile items. Check TargetFramework and LangVersion before using newer C# features.
+- SDK-style projects: files are globbed automatically; do not list Compile items. The default C# version follows the target framework (C# 12 for net8.0, 13 for net9.0, 14 for net10.0), so check TargetFramework and LangVersion before using newer language features.
 - Use built-in dependency injection; register services in Program.cs; prefer constructor injection; avoid service locator.
 - Async all the way with CancellationToken on I/O; never block with .Result/.Wait().
 - Nullable reference types: respect annotations, do not silence with ! without a reason.

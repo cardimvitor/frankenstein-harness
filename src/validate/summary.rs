@@ -54,6 +54,12 @@ pub fn summarize_run(dir: &Path, failed_steps: &str) -> String {
     } else {
         grade("Pass rate / time vs plain Qwen Code", "NO DATA", "eval did not run".into());
     }
+    let single = of("fh-single");
+    if !fh.is_empty() && !single.is_empty() {
+        let multi_fh: Vec<&&Value> = fh.iter().filter(|r| r["id"].as_str().map(|i| i.contains("two-modules")).unwrap_or(false)).collect();
+        let _ = multi_fh;
+        grade("Orchestration adds value (fh vs fh-single)", if rate(&fh) >= rate(&single) && secs(&fh) <= secs(&single) * 1.25 { "PASS" } else { "FAIL" }, format!("fan-out {:.0}% in {:.1}s vs single agent {:.0}% in {:.1}s; if FAIL, set maxConcurrency to 1 (docs/ROADMAP.md, gate decision 1)", rate(&fh) * 100.0, secs(&fh), rate(&single) * 100.0, secs(&single)));
+    }
     let gate_ok = unit.contains("test gate_is_deterministic_fast_and_makes_no_llm_call ... ok");
     if !fh.is_empty() {
         let vfn = fh.iter().filter(|r| r["verifierFalseNegative"] == true).count();
@@ -68,7 +74,19 @@ pub fn summarize_run(dir: &Path, failed_steps: &str) -> String {
     let web_fail = web.contains("FAILED") || web.contains("test result: FAILED");
     let web_ok = !web.is_empty() && !web_fail && web.contains("test result: ok");
     let smoke_ok = smoke.contains("forged Host -> 403") && smoke.contains("API without cookie -> 401") && smoke.contains("foreign Origin POST -> 403");
-    grade("Web UI security checklist (Host/Origin, cookie, CSP, loopback)", if web.is_empty() && smoke.is_empty() { "NO DATA" } else if web_ok && smoke_ok { "PASS" } else { "FAIL" }, "unit tests + live HTTP smoke test".into());
+    let (web_grade, web_detail) = if smoke.is_empty() && web.is_empty() {
+        ("NO DATA", "not run".to_string())
+    } else if web.is_empty() {
+        (if smoke_ok { "PASS" } else { "FAIL" }, "live HTTP smoke test only (unit tests were skipped)".to_string())
+    } else {
+        (if web_ok && smoke_ok { "PASS" } else { "FAIL" }, "unit tests + live HTTP smoke test".to_string())
+    };
+    grade("Web UI security checklist (Host/Origin, cookie, CSP, loopback)", web_grade, web_detail);
+    let tui = read(&dir.join("tui-smoke.txt"));
+    if !tui.is_empty() {
+        let ok = ["HEADER True True", "PLAN True", "VERIFIED True True", "EXIT True", "FILE True"].iter().all(|k| tui.contains(k));
+        grade("Terminal UI works in a real terminal", if ok { "PASS" } else { "FAIL" }, "header, plan card, approval, verified result, clean exit (pseudo-terminal, scripted mock model)".into());
+    }
     let unit_ok = !unit.is_empty() && !unit.contains("FAILED") && unit.contains("test result: ok");
     let passed: usize = unit.lines().filter_map(|l| l.split("test result: ok. ").nth(1)).filter_map(|r| r.split(" passed").next()?.trim().parse::<usize>().ok()).sum();
     grade("Harness self-tests", if unit.is_empty() { "NO DATA" } else if unit_ok { "PASS" } else { "FAIL" }, format!("{passed} tests passed"));
@@ -102,6 +120,14 @@ pub fn summarize_run(dir: &Path, failed_steps: &str) -> String {
             out.push(s.lines().skip(1).collect::<Vec<_>>().join("\n"));
             out.push(String::new());
         }
+    }
+    if let Some(v) = &vllm {
+        out.push("## Suggested vLLM and harness changes".into());
+        out.push(String::new());
+        for r in crate::validate::recommend::recommend(v) {
+            out.push(format!("- {r}"));
+        }
+        out.push(String::new());
     }
     out.push("## Not covered by this run".into());
     out.push(String::new());

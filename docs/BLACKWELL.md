@@ -20,18 +20,41 @@ The harness only talks to vLLM over HTTP, so the GPU does not change the harness
 
 `scripts/vps-validate.sh` writes `environment.txt` with the GPU name, memory, driver and compute capability, the vLLM version from `GET /version`, the served model list (with `max_model_len`), the vLLM process flags with secrets redacted, and the Python `vllm`/`torch`/CUDA versions when importable. Send that file along with `SUMMARY.md` when you ask for tuning advice; it is what settles the open questions above.
 
-## Suggested vLLM launch shape (verify against your version's docs)
+## Launch profiles (`deploy/vllm/serve.sh`)
 
 ```bash
-vllm serve <model> \
-  --served-model-name <name> \
-  --max-model-len 131072 \
-  --gpu-memory-utilization 0.90 \
-  --enable-prefix-caching \
-  --reasoning-parser qwen3 \
-  --enable-auto-tool-choice --tool-call-parser qwen3_coder \
-  --speculative-config '{"method":"mtp","num_speculative_tokens":3}' \
-  --api-key "$VLLM_API_KEY"
+MODEL=<checkpoint> SERVED_NAME=qwen VLLM_API_KEY=<token> deploy/vllm/serve.sh          # PROFILE=balanced
+PROFILE=long-context MODEL=... deploy/vllm/serve.sh                                     # 256K window, fp8 KV, fewer sequences
+PROFILE=throughput   MODEL=... deploy/vllm/serve.sh                                     # more parallel workers, 64K window
+PROFILE=safe         MODEL=... deploy/vllm/serve.sh                                     # smaller everything, MTP 2, for first bring-up
+deploy/vllm/serve.sh --print                                                            # show the command without running it
 ```
 
-Flag names change between vLLM releases; the harness never edits your service, it only reports what it measured.
+| Setting | balanced | Why |
+|---|---|---|
+| `--max-model-len` | 131072 | Enough for large repos with room for tool output; the long-context probe tells you where retrieval actually degrades, then lower it to that. |
+| `--gpu-memory-utilization` | 0.92 | Leaves headroom for CUDA graphs and activations on a 96 GB card; raise only if the KV usage probe shows pressure and there is no OOM. |
+| `--kv-cache-dtype` | auto | Unquantized KV is the accuracy-safe start. `fp8` roughly doubles KV capacity: A/B it (below). |
+| `--max-num-seqs` | 16 | A few parallel workers + reviewer + the user's own turn; the concurrency probe recommends the harness-side `maxConcurrency`. |
+| `--max-num-batched-tokens` | 16384 | Chunked prefill size: large enough for fast prefill of long repo context, small enough that decode for other requests is not starved. |
+| `--enable-prefix-caching`, `--enable-chunked-prefill` | on | The harness keeps a byte-stable system prompt and tool schema for cache hits. |
+| `--speculative-config` | `mtp`, 3 tokens | As you specified; the validator reports per-position acceptance so 3 vs 2 is a measurement, not a guess. |
+| `--reasoning-parser qwen3`, `--tool-call-parser qwen3_coder`, `--enable-auto-tool-choice` | on | What the harness expects; probes verify them. |
+| `--generation-config vllm` | on | The harness sends its own sampling parameters every request, so the checkpoint's defaults are ignored. |
+| API key | `VLLM_API_KEY` env | Not on the command line, where `ps` would show it. Bind to `127.0.0.1` unless firewalled. |
+
+**Not set on purpose:** `--dtype` and `--quantization` (a pre-quantized FP8/NVFP4 checkpoint declares them itself), attention-backend environment variables (leave the default; if Blackwell kernels misbehave on your vLLM build, that is the first thing to try, and it is a version-specific fix I cannot verify from here), and `--async-scheduling` (available in newer releases; try it via `EXTRA="--async-scheduling"` and measure).
+
+## A/B plan (each step: change one thing, re-run `scripts/vps-validate.sh --quick`, compare)
+
+1. **MTP tokens 3 vs 2** (`MTP_TOKENS=2`): keep 3 only if position 3 is accepted often enough that end-to-end eval time improves.
+2. **KV dtype auto vs fp8** (`KV_DTYPE=fp8`): keep fp8 only if the long-context retrieval probe stays clean at your target size and the concurrency probe shows headroom gained.
+3. **`max-num-batched-tokens` 8192 / 16384 / 32768**: watch time-to-first-token on long prompts against decode speed under parallel load.
+4. **`max-num-seqs` 8 / 16 / 32** together with the harness's `maxConcurrency`: the point where p95 latency starts to climb is your ceiling.
+5. **Context length**: lower `--max-model-len` to the largest size the retrieval probe passes; a smaller window frees KV for concurrency.
+
+`SUMMARY.md` ends with a "Suggested vLLM and harness changes" section that turns these measurements into concrete flag changes.
+
+## Choosing the checkpoint on Blackwell
+
+If the checkpoint you call "the Blackwell version" is an FP8 or NVFP4 build, use it as shipped and do not pass quantization flags; the probes then measure it as it will run. Compare against a BF16 build only if you suspect a quality regression (tool-call malformed rate and the eval pass rate are the tell).

@@ -26,7 +26,7 @@ Usage:
   fh serve [--port N]         local web UI (127.0.0.1 only)
   fh doctor                   check endpoint, model, auth, metrics, sandbox
   fh validate-vllm [options]  measure MTP, prefix cache, tool calls, long context, concurrency
-  fh eval --tasks <dir> [options]   run the eval corpus (--runner fh|qwen|both)
+  fh eval --tasks <dir> [options]   run the eval corpus (--runner fh|fh-single|qwen|both|all|orch)
   fh undo                     restore the working tree to the last checkpoint
   fh activity                 recent skill activity
   fh history [skill]          version history (hash, reason, diff) of learned skills
