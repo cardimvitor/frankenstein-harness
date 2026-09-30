@@ -283,3 +283,68 @@ async fn thin_skill_is_enriched_only_with_verifiable_repo_evidence() {
     assert!(matches!(research_skill(&store3, &llm, d.path(), &sk3, None).await, Outcome::Skipped(r) if r.starts_with("rejected")));
     assert_eq!(store3.get(&id3).unwrap().version, 1);
 }
+
+fn fp_dir(files: &[(&str, &str)]) -> (tempfile::TempDir, Fingerprint) {
+    let d = tempfile::tempdir().unwrap();
+    for (n, c) in files {
+        let p = d.path().join(n);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, c).unwrap();
+    }
+    let f = fh::fingerprint::fingerprint(d.path());
+    (d, f)
+}
+
+fn applies(name: &str, fp: &Fingerprint) -> bool {
+    load_builtins().iter().find(|s| s.name == name).map(|s| skill_applies(s, fp)).unwrap_or_else(|| panic!("no pack {name}"))
+}
+
+fn ver(fp: &Fingerprint, id: &str) -> Option<String> {
+    fp.stacks.iter().find(|s| s.id == id).and_then(|s| s.version.clone())
+}
+
+#[test]
+fn spring_django_and_vue_are_detected_with_versions_and_packs_apply_accordingly() {
+    // Spring Boot via Maven parent POM
+    let (_d, fp) = fp_dir(&[("pom.xml", "<project><parent><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-parent</artifactId><version>3.4.1</version></parent></project>"), ("mvnw", "#!/bin/sh\n")]);
+    assert_eq!(ver(&fp, "spring-boot").as_deref(), Some("3"));
+    assert!(applies("spring-boot", &fp) && !applies("django", &fp));
+    assert_eq!(fp.verify.iter().map(|v| v.cmd.as_str()).collect::<Vec<_>>(), vec!["./mvnw -q -B -DskipTests compile", "./mvnw -q -B test"]);
+    // Spring Boot via the Gradle plugin, Kotlin DSL, no wrapper
+    let (_d, fp) = fp_dir(&[("build.gradle.kts", "plugins {\n    id(\"org.springframework.boot\") version \"4.0.2\"\n}\n")]);
+    assert_eq!(ver(&fp, "spring-boot").as_deref(), Some("4"));
+    assert!(fp.verify.iter().any(|v| v.cmd == "gradle -q test"));
+    // plain Maven project without Spring
+    let (_d, fp) = fp_dir(&[("pom.xml", "<project><artifactId>lib</artifactId></project>")]);
+    assert!(ver(&fp, "spring-boot").is_none() && fp.stacks.iter().any(|s| s.id == "java") && !applies("spring-boot", &fp));
+
+    // Django: pinned requirement gives major.minor; the pack applies to any Django version, manage.py tests are used
+    let (_d, fp) = fp_dir(&[("manage.py", "#!/usr/bin/env python\n"), ("requirements.txt", "Django==5.2.3\ndjango-cors-headers==4.3\n"), ("shop/tests.py", "")]);
+    assert_eq!(ver(&fp, "django").as_deref(), Some("5.2"));
+    assert!(applies("django", &fp));
+    assert!(fp.verify.iter().any(|v| v.cmd == "python3 manage.py test") && !fp.verify.iter().any(|v| v.cmd.contains("unittest")));
+    let (_d, fp) = fp_dir(&[("requirements.txt", "django>=4.2,<5\n")]);
+    assert_eq!(ver(&fp, "django").as_deref(), Some("4.2"));
+    // a package that merely starts with "django-" is not Django
+    let (_d, fp) = fp_dir(&[("requirements.txt", "django-cors-headers==4.3\nrequests\n")]);
+    assert!(ver(&fp, "django").is_none() && !fp.stacks.iter().any(|s| s.id == "django"));
+    // unknown Django version (no comparator): still detected, pack applies
+    let (_d, fp) = fp_dir(&[("manage.py", ""), ("requirements.txt", "django\n")]);
+    assert!(fp.stacks.iter().any(|s| s.id == "django") && ver(&fp, "django").is_none() && applies("django", &fp));
+    // pytest-django keeps pytest as the runner
+    let (_d, fp) = fp_dir(&[("manage.py", ""), ("pytest.ini", "[pytest]\nDJANGO_SETTINGS_MODULE=x.settings\n"), ("requirements.txt", "Django==5.0\n"), ("test_a.py", "")]);
+    assert!(fp.verify.iter().any(|v| v.name == "pytest") && !fp.verify.iter().any(|v| v.cmd.contains("manage.py test")));
+
+    // Vue 3 vs Vue 2 packs, and a non-numeric spec means the current major
+    let (_d, fp) = fp_dir(&[("package.json", r#"{"dependencies":{"vue":"^3.5.0"}}"#)]);
+    assert!(applies("vue-3", &fp) && !applies("vue-2-legacy", &fp));
+    let (_d, fp) = fp_dir(&[("package.json", r#"{"dependencies":{"vue":"~2.7.16"}}"#)]);
+    assert!(applies("vue-2-legacy", &fp) && !applies("vue-3", &fp));
+    let (_d, fp) = fp_dir(&[("package.json", r#"{"dependencies":{"vue":"catalog:"}}"#)]);
+    assert!(applies("vue-3", &fp));
+    // every built-in pack passes the data-only validator (no URLs, commands or override language)
+    for s in load_builtins() {
+        assert!(validate_skill_body(&s.body, &s.summary, &s.name).is_ok(), "pack {} fails the validator: {:?}", s.name, validate_skill_body(&s.body, &s.summary, &s.name));
+    }
+    assert!(load_builtins().len() >= 18);
+}

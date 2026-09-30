@@ -96,6 +96,38 @@ pub fn detect_dotnet(files: &[String], cwd: &Path) -> Vec<StackTag> {
     tags
 }
 
+/// Spring Boot (Maven or Gradle) and the JVM language; the version is the Boot major from the parent POM or plugin.
+pub fn detect_jvm(files: &[String], cwd: &Path) -> Vec<StackTag> {
+    let builds: Vec<&String> = files.iter().filter(|f| matches!(f.rsplit('/').next(), Some("pom.xml") | Some("build.gradle") | Some("build.gradle.kts"))).collect();
+    if builds.is_empty() {
+        return vec![];
+    }
+    let text: String = builds.iter().take(20).map(|f| read(&cwd.join(f))).collect::<Vec<_>>().join("\n");
+    let mut tags = vec![tag("java", None)];
+    if text.contains("spring-boot") || text.contains("org.springframework.boot") {
+        let parent = Regex::new(r"(?s)<parent>.*?spring-boot-starter-parent.*?<version>\s*(\d+)\.").unwrap();
+        let plugin = Regex::new(r#"org\.springframework\.boot['"]?\)?\s*(?:version)?\s*['"](\d+)\."#).unwrap();
+        let bom = Regex::new(r"spring-boot-dependencies[:\s\S]{0,80}?(\d+)\.\d+\.\d+").unwrap();
+        let v = parent.captures(&text).or_else(|| plugin.captures(&text)).or_else(|| bom.captures(&text)).map(|m| m[1].to_string());
+        tags.push(StackTag { id: "spring-boot".into(), version: v });
+    }
+    tags
+}
+
+/// Django: manage.py or a Django dependency; the version is major.minor from the first pinned requirement.
+pub fn detect_django(files: &[String], cwd: &Path) -> Vec<StackTag> {
+    let reqs: Vec<&String> = files.iter().filter(|f| { let n = f.rsplit('/').next().unwrap_or(""); n.starts_with("requirements") && n.ends_with(".txt") || matches!(n, "pyproject.toml" | "setup.py" | "setup.cfg" | "Pipfile") }).collect();
+    let text: String = reqs.iter().take(20).map(|f| read(&cwd.join(f))).collect::<Vec<_>>().join("\n");
+    let dep = Regex::new(r#"(?im)(?:^|[\s"'\[,])django(?:\[[^\]]*\])?\s*(?:(?:==|>=|~=|<=|=|>|<)\s*["']?(\d+)\.(\d+)[\w.*]*)?(?:[\s"',\]]|$)"#).unwrap();
+    let has_manage = files.iter().any(|f| f == "manage.py");
+    let m = dep.captures(&text);
+    if !has_manage && m.is_none() {
+        return vec![];
+    }
+    let version = m.and_then(|c| Some(format!("{}.{}", c.get(1)?.as_str(), c.get(2)?.as_str())));
+    vec![StackTag { id: "django".into(), version }]
+}
+
 pub fn detect_node(pkg: &Option<Value>, files: &[String]) -> Vec<StackTag> {
     let Some(pkg) = pkg else { return vec![] };
     let dep = |n: &str| -> Option<String> { ["dependencies", "devDependencies"].iter().find_map(|k| pkg.get(k).and_then(|d| d.get(n)).and_then(|v| v.as_str()).map(|s| s.to_string())) };
@@ -112,7 +144,8 @@ pub fn detect_node(pkg: &Option<Value>, files: &[String]) -> Vec<StackTag> {
         }
     }
     if let Some(v) = dep("vue") {
-        tags.push(StackTag { id: "vue".into(), version: major(&v) });
+        // a non-numeric spec (latest, catalog:, workspace:) means the current major
+        tags.push(StackTag { id: "vue".into(), version: major(&v).or_else(|| Some("3".into())) });
     }
     if dep("typescript").is_some() || files.iter().any(|f| f == "tsconfig.json") {
         tags.push(tag("typescript", None));
@@ -167,9 +200,23 @@ pub fn detect_verify(cwd: &Path, files: &[String], pkg: &Option<Value>) -> Vec<V
             out.push(VerifyCmd { name: "dotnet test".into(), cmd: format!("dotnet test {sln:?} --nologo -v q"), kind: VerifyKind::Test });
         }
     }
+    let root_has = |n: &str| files.iter().any(|f| f == n);
+    if root_has("pom.xml") {
+        let mvn = if cwd.join("mvnw").exists() { "./mvnw" } else { "mvn" };
+        out.push(VerifyCmd { name: "maven compile".into(), cmd: format!("{mvn} -q -B -DskipTests compile"), kind: VerifyKind::Build });
+        out.push(VerifyCmd { name: "maven test".into(), cmd: format!("{mvn} -q -B test"), kind: VerifyKind::Test });
+    } else if root_has("build.gradle") || root_has("build.gradle.kts") {
+        let g = if cwd.join("gradlew").exists() { "./gradlew" } else { "gradle" };
+        out.push(VerifyCmd { name: "gradle classes".into(), cmd: format!("{g} -q classes"), kind: VerifyKind::Build });
+        out.push(VerifyCmd { name: "gradle test".into(), cmd: format!("{g} -q test"), kind: VerifyKind::Test });
+    }
     let pytest_marker = files.iter().any(|f| matches!(f.as_str(), "pyproject.toml" | "pytest.ini" | "setup.py" | "tox.ini" | "conftest.py"));
     let py_tests = Regex::new(r"(^|/)(test_.*|.*_test)\.py$").unwrap();
-    if files.iter().any(|f| py_tests.is_match(f)) {
+    let django = root_has("manage.py") && !pytest_marker;
+    if django {
+        out.push(VerifyCmd { name: "django check".into(), cmd: "python3 manage.py check".into(), kind: VerifyKind::Build });
+        out.push(VerifyCmd { name: "django test".into(), cmd: "python3 manage.py test".into(), kind: VerifyKind::Test });
+    } else if files.iter().any(|f| py_tests.is_match(f)) {
         if pytest_marker {
             out.push(VerifyCmd { name: "pytest".into(), cmd: "python3 -m pytest -q".into(), kind: VerifyKind::Test });
         } else {
@@ -192,6 +239,8 @@ pub fn fingerprint(cwd: &Path) -> Fingerprint {
     let pkg = read_json(&cwd.join("package.json"));
     let mut stacks: Vec<StackTag> = detect_dotnet(&files, cwd);
     stacks.extend(detect_node(&pkg, &files));
+    stacks.extend(detect_jvm(&files, cwd));
+    stacks.extend(detect_django(&files, cwd));
     if files.iter().any(|f| f.ends_with(".py")) {
         stacks.push(tag("python", None));
     }

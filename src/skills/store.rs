@@ -85,7 +85,7 @@ fn now_ms() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
 }
 
-const BUILTIN_FILES: [&str; 14] = [
+const BUILTIN_FILES: [&str; 18] = [
     include_str!("builtin/global-backend.md"),
     include_str!("builtin/global-frontend.md"),
     include_str!("builtin/global-sql.md"),
@@ -100,6 +100,10 @@ const BUILTIN_FILES: [&str; 14] = [
     include_str!("builtin/stack-react-18-19.md"),
     include_str!("builtin/stack-angular-17plus.md"),
     include_str!("builtin/stack-angularjs-1x.md"),
+    include_str!("builtin/stack-vue-3.md"),
+    include_str!("builtin/stack-vue-2-legacy.md"),
+    include_str!("builtin/stack-spring-boot.md"),
+    include_str!("builtin/stack-django.md"),
 ];
 
 /// The immutable layer shipped inside the binary.
