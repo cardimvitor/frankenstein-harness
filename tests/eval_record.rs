@@ -1,0 +1,125 @@
+use fh::eval::record::{record_task, RecordOptions};
+use fh::eval::runner::load_tasks;
+use std::path::Path;
+use std::process::Command;
+
+fn sh(cwd: &Path, c: &str) {
+    assert!(Command::new("sh").arg("-c").arg(c).current_dir(cwd).output().unwrap().status.success(), "{c}");
+}
+
+fn opts(id: &str, out: &Path) -> RecordOptions {
+    RecordOptions { id: id.into(), prompt: "Fix sum_range so it is inclusive.".into(), oracle: "python3 -m unittest discover -q".into(), out: out.to_path_buf(), base: Some("base".into()), solution: Some("solution".into()), setup: None, force: false }
+}
+
+fn repo() -> tempfile::TempDir {
+    let d = tempfile::tempdir().unwrap();
+    std::fs::write(d.path().join("mathx.py"), "def sum_range(a, b):\n    return sum(range(a, b))\n").unwrap();
+    std::fs::write(d.path().join("test_mathx.py"), "import unittest\nfrom mathx import sum_range\n\nclass T(unittest.TestCase):\n    def test_it(self):\n        self.assertEqual(sum_range(1, 4), 10)\n").unwrap();
+    sh(d.path(), "git init -q -b main && git config user.email a@b && git config user.name t && git add -A && git commit -qm base && git tag base");
+    std::fs::write(d.path().join("mathx.py"), "def sum_range(a, b):\n    return sum(range(a, b + 1))\n").unwrap();
+    sh(d.path(), "git commit -qam fix && git tag solution && git checkout -q base");
+    d
+}
+
+#[tokio::test]
+async fn record_validates_the_task_and_writes_a_loadable_directory() {
+    let d = repo();
+    let out = tempfile::tempdir().unwrap();
+    let r = record_task(d.path(), opts("inclusive-range", out.path())).await.unwrap();
+    assert!(r.oracle_fails_on_base);
+    assert_eq!(r.oracle_passes_with_solution, Some(true));
+    let t = out.path().join("inclusive-range");
+    assert!(std::fs::read_to_string(t.join("repo/mathx.py")).unwrap().contains("range(a, b))"), "repo/ holds the BASE state");
+    assert!(!t.join("repo/.git").exists());
+    let patch = std::fs::read_to_string(t.join("solution.patch")).unwrap();
+    assert!(patch.contains("b + 1"));
+    // the runner loads it like any hand-written task
+    let tasks = load_tasks(out.path());
+    assert_eq!(tasks.len(), 1);
+    assert_eq!(tasks[0].id, "inclusive-range");
+    assert_eq!(tasks[0].oracle, "python3 -m unittest discover -q");
+    // recording again needs --force
+    assert!(record_task(d.path(), opts("inclusive-range", out.path())).await.unwrap_err().contains("already exists"));
+    let mut o = opts("inclusive-range", out.path());
+    o.force = true;
+    assert!(record_task(d.path(), o).await.is_ok());
+}
+
+#[tokio::test]
+async fn record_refuses_tasks_that_cannot_discriminate() {
+    let d = repo();
+    let out = tempfile::tempdir().unwrap();
+    // an oracle that always passes
+    let mut o = opts("trivial", out.path());
+    o.oracle = "true".into();
+    assert!(record_task(d.path(), o).await.unwrap_err().contains("already passes"));
+    // an oracle that never passes, even with the solution
+    let mut o = opts("impossible", out.path());
+    o.oracle = "false".into();
+    assert!(record_task(d.path(), o).await.unwrap_err().contains("does not pass"));
+    // bad ids and revisions
+    assert!(record_task(d.path(), opts("../evil", out.path())).await.is_err());
+    let mut o = opts("x", out.path());
+    o.solution = Some("no-such-rev".into());
+    assert!(record_task(d.path(), o).await.unwrap_err().contains("unknown revision"));
+    // without a solution the task is recorded (only the base failure is checked)
+    let mut o = opts("no-solution", out.path());
+    o.solution = None;
+    let r = record_task(d.path(), o).await.unwrap();
+    assert_eq!(r.oracle_passes_with_solution, None);
+    assert!(!out.path().join("no-solution/solution.patch").exists());
+}
+
+#[test]
+fn oracle_file_and_setup_are_loaded_from_task_json() {
+    let out = tempfile::tempdir().unwrap();
+    let t = out.path().join("t1");
+    std::fs::create_dir_all(t.join("repo")).unwrap();
+    std::fs::write(t.join("oracle.sh"), "python3 -m pytest -q tests/x.py\n").unwrap();
+    std::fs::write(t.join("task.json"), r#"{"id":"t1","prompt":"p","oracleFile":"oracle.sh","setup":"pip install -e .","oracleTimeoutS":1200}"#).unwrap();
+    let tasks = load_tasks(out.path());
+    assert_eq!(tasks[0].oracle.trim(), "python3 -m pytest -q tests/x.py");
+    assert_eq!(tasks[0].setup.as_deref(), Some("pip install -e ."));
+    assert_eq!(tasks[0].oracle_timeout_s, 1200);
+}
+
+#[test]
+fn swebench_adapter_builds_task_dirs_from_instances() {
+    let root = tempfile::tempdir().unwrap();
+    // a local stand-in for github.com/acme/lib
+    let upstream = root.path().join("upstream/acme/lib");
+    std::fs::create_dir_all(&upstream).unwrap();
+    std::fs::write(upstream.join("mathx.py"), "def sum_range(a, b):\n    return sum(range(a, b))\n").unwrap();
+    sh(&upstream, "git init -q -b main && git config user.email a@b && git config user.name t && git add -A && git commit -qm base");
+    let base = String::from_utf8(Command::new("git").args(["rev-parse", "HEAD"]).current_dir(&upstream).output().unwrap().stdout).unwrap().trim().to_string();
+    let test_patch = "diff --git a/test_hidden.py b/test_hidden.py\nnew file mode 100644\n--- /dev/null\n+++ b/test_hidden.py\n@@ -0,0 +1,6 @@\n+import unittest\n+from mathx import sum_range\n+\n+class T(unittest.TestCase):\n+    def test_it(self):\n+        self.assertEqual(sum_range(1, 4), 10)\n";
+    let inst = serde_json::json!({"instance_id": "acme__lib-1", "repo": "acme/lib", "base_commit": base, "problem_statement": "sum_range should be inclusive.", "test_patch": test_patch, "FAIL_TO_PASS": "[\"test_hidden.T.test_it\"]", "PASS_TO_PASS": [], "version": "1.0"});
+    let skipped = serde_json::json!({"instance_id": "sympy__sympy-1", "repo": "sympy/sympy", "base_commit": base, "problem_statement": "x", "test_patch": "", "FAIL_TO_PASS": ["test_x"], "PASS_TO_PASS": [], "version": "1"});
+    let file = root.path().join("instances.jsonl");
+    std::fs::write(&file, format!("{}\n{}\n", inst, skipped)).unwrap();
+    let out = root.path().join("tasks");
+    let script = format!("{}/scripts/swebench_to_tasks.py", env!("CARGO_MANIFEST_DIR"));
+    let r = Command::new("python3")
+        .args([&script, file.to_str().unwrap(), "--out", out.to_str().unwrap(), "--cache", root.path().join("cache").to_str().unwrap(), "--clone-url-template", &format!("file://{}/upstream/{{repo}}", root.path().display()), "--pytest-cmd", "python3 -m unittest"])
+        .output()
+        .unwrap();
+    assert!(r.status.success(), "{}", String::from_utf8_lossy(&r.stderr));
+    assert!(String::from_utf8_lossy(&r.stderr).contains("sympy__sympy-1"), "the unsupported repo is reported as skipped");
+    let t = out.join("acme__lib-1");
+    assert!(t.join("repo/test_hidden.py").exists(), "hidden tests applied");
+    assert!(!t.join("repo/.git").exists());
+    assert!(!t.join("repo/oracle.sh").exists(), "the oracle stays outside repo/");
+    let tasks = load_tasks(&out);
+    assert_eq!(tasks.len(), 1);
+    assert!(tasks[0].prompt.contains("inclusive"));
+    // the oracle fails on the starting state and passes once the bug is fixed
+    let work = root.path().join("work");
+    std::fs::create_dir_all(&work).unwrap();
+    sh(&work, &format!("cp -r {}/repo/. .", t.display()));
+    let run_oracle = |dir: &Path| Command::new("sh").arg("-c").arg(&tasks[0].oracle).current_dir(dir).output().unwrap().status.success();
+    assert!(!run_oracle(&work));
+    std::fs::write(work.join("mathx.py"), "def sum_range(a, b):\n    return sum(range(a, b + 1))\n").unwrap();
+    assert!(run_oracle(&work));
+    let idx: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(out.join("INDEX.json")).unwrap()).unwrap();
+    assert_eq!(idx["converted"][0], "acme__lib-1");
+}

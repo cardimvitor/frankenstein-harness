@@ -31,6 +31,8 @@ Usage:
   fh keep                     apply the last rejected patch anyway (recorded as a verifier false positive)
   fh sessions                 list task sessions of this repository (interrupted ones can be resumed)
   fh resume [id]              continue an interrupted session with its stored plan and checkpoint
+  fh record <id> --prompt \"..\" --oracle \"cmd\" [--base rev] [--solution rev] [--out eval/tasks]
+                              snapshot your own work as an eval task (oracle must fail on base, pass with the solution)
   fh trust [--revoke|--list]  trust this repository: project hooks (.fh/hooks.json) and MCP servers (.fh/mcp.json) run only then
   fh activity                 recent skill activity
   fh history [skill]          version history (hash, reason, diff) of learned skills
@@ -68,7 +70,7 @@ impl Args {
 }
 
 pub fn parse_args(argv: &[String]) -> Args {
-    const VALUED: [&str; 12] = ["mode", "cwd", "port", "tasks", "runner", "out", "limit", "repeat", "max-context", "concurrency", "trials", "qwen-cmd"];
+    const VALUED: &[&str] = &["mode", "cwd", "port", "tasks", "runner", "out", "limit", "repeat", "max-context", "concurrency", "trials", "qwen-cmd", "prompt", "oracle", "base", "solution", "setup"];
     let mut flags = HashMap::new();
     let mut positional = Vec::new();
     let mut i = 0;
@@ -193,6 +195,23 @@ pub async fn main(argv: Vec<String>) -> i32 {
                 Err(e) => eprintln!("cannot open skill store: {e}"),
             }
             return 0;
+        }
+        "record" => {
+            let Some(id) = args.positional.first().cloned() else {
+                eprintln!("usage: fh record <id> --prompt \"..\" --oracle \"cmd\" [--base rev] [--solution rev] [--out dir]");
+                return 2;
+            };
+            let o = crate::eval::record::RecordOptions { id, prompt: args.get("prompt").unwrap_or("").to_string(), oracle: args.get("oracle").unwrap_or("").to_string(), out: PathBuf::from(args.get("out").unwrap_or("eval/tasks")), base: args.get("base").map(|s| s.to_string()), solution: args.get("solution").map(|s| s.to_string()), setup: args.get("setup").map(|s| s.to_string()), force: args.has("force") };
+            return match crate::eval::record::record_task(&cwd, o).await {
+                Ok(r) => {
+                    println!("recorded {} (oracle fails on base: {}{})", r.dir.display(), r.oracle_fails_on_base, r.oracle_passes_with_solution.map(|p| format!(", passes with the solution: {p}")).unwrap_or_default());
+                    0
+                }
+                Err(e) => {
+                    eprintln!("{e}");
+                    1
+                }
+            };
         }
         "trust" => {
             if args.has("list") {

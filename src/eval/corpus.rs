@@ -14,6 +14,9 @@ pub struct EvalTask {
     pub tags: Vec<String>,
     /// binary that must exist for the oracle to run (task is skipped otherwise)
     pub requires: Option<String>,
+    /// prepares the copied repo before the agent runs (e.g. installing dependencies); part of the base state
+    pub setup: Option<String>,
+    pub oracle_timeout_s: u64,
 }
 
 const PKG: &str = "{\n  \"name\": \"fixture\",\n  \"version\": \"1.0.0\",\n  \"type\": \"commonjs\",\n  \"scripts\": { \"test\": \"node --test\" }\n}\n";
@@ -23,7 +26,7 @@ fn f(p: &str, c: &str) -> (String, String) {
 }
 
 fn task(id: &str, tags: &[&str], prompt: &str, oracle: &str, files: Vec<(String, String)>) -> EvalTask {
-    EvalTask { id: id.into(), prompt: prompt.into(), oracle: oracle.into(), files, repo_dir: None, timeout_s: 900, tags: tags.iter().map(|s| s.to_string()).collect(), requires: None }
+    EvalTask { id: id.into(), prompt: prompt.into(), oracle: oracle.into(), files, repo_dir: None, timeout_s: 900, tags: tags.iter().map(|s| s.to_string()).collect(), requires: None, setup: None, oracle_timeout_s: 300 }
 }
 
 fn js_tasks() -> Vec<EvalTask> {

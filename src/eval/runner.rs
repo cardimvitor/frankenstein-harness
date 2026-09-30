@@ -56,16 +56,20 @@ pub fn load_tasks(dir: &Path) -> Vec<EvalTask> {
                 continue;
             }
             let Ok(v) = serde_json::from_str::<Value>(&std::fs::read_to_string(&tj).unwrap_or_default()) else { continue };
-            let (Some(prompt), Some(oracle)) = (v["prompt"].as_str(), v["oracle"].as_str()) else { continue };
+            // the oracle is a command in task.json, or a script kept beside it (outside repo/, so the agent never sees it)
+            let oracle_txt: Option<String> = v["oracle"].as_str().map(|s| s.to_string()).or_else(|| v["oracleFile"].as_str().and_then(|f| std::fs::read_to_string(e.path().join(f)).ok()));
+            let (Some(prompt), Some(oracle)) = (v["prompt"].as_str(), oracle_txt) else { continue };
             out.push(EvalTask {
                 id: v["id"].as_str().map(|s| s.to_string()).unwrap_or_else(|| e.file_name().to_string_lossy().to_string()),
                 prompt: prompt.into(),
-                oracle: oracle.into(),
+                oracle,
                 files: vec![],
                 repo_dir: Some(e.path().join("repo")),
                 timeout_s: v["timeoutS"].as_u64().unwrap_or(900),
                 tags: v["tags"].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect()).unwrap_or_default(),
                 requires: None,
+                setup: v["setup"].as_str().map(|s| s.to_string()),
+                oracle_timeout_s: v["oracleTimeoutS"].as_u64().unwrap_or(300),
             });
         }
     }
@@ -100,12 +104,15 @@ pub async fn materialize(t: &EvalTask) -> PathBuf {
             let _ = std::fs::write(p, body);
         }
     }
+    if let Some(setup) = &t.setup {
+        run_simple(setup, &d, 1_800_000).await;
+    }
     run_simple("git init -q && git add -A && git -c user.name=eval -c user.email=eval@local commit -qm base", &d, 30_000).await;
     d
 }
 
 async fn oracle_ok(t: &EvalTask, cwd: &Path) -> bool {
-    run_simple(&t.oracle, cwd, 120_000).await.code == Some(0)
+    run_simple(&t.oracle, cwd, t.oracle_timeout_s * 1000).await.code == Some(0)
 }
 
 pub async fn run_one(cfg: &Config, env: &Env, t: &EvalTask, runner: &str, rep: usize, qwen_cmd: &str) -> EvalRow {
