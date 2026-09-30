@@ -150,6 +150,29 @@ async fn chat(State(state): State<Arc<Mutex<MockState>>>, headers: HeaderMap, Js
     Response::builder().header(header::CONTENT_TYPE, "text/event-stream").body(Body::from(out)).unwrap()
 }
 
+/// Deterministic bag-of-words embedding with a small synonym table, so tests can show recall BM25 lacks.
+async fn embeddings(Json(body): Json<Value>) -> Response {
+    const GROUPS: [&[&str]; 3] = [&["login", "sign", "signin", "authenticate", "authentication", "password", "credentials", "users"], &["chart", "graph", "plot", "visualization"], &["database", "sql", "query", "migration"]];
+    let inputs: Vec<String> = match &body["input"] {
+        Value::String(s) => vec![s.clone()],
+        Value::Array(a) => a.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect(),
+        _ => vec![],
+    };
+    let data: Vec<Value> = inputs
+        .iter()
+        .enumerate()
+        .map(|(i, t)| {
+            let mut v = vec![0f64; 256];
+            for w in t.to_lowercase().split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()) {
+                let slot = GROUPS.iter().position(|g| g.contains(&w)).unwrap_or_else(|| 3 + (w.bytes().fold(0usize, |a, b| a.wrapping_mul(31).wrapping_add(b as usize)) % 253));
+                v[slot] += 1.0;
+            }
+            json!({"index": i, "embedding": v})
+        })
+        .collect();
+    Json(json!({"data": data})).into_response()
+}
+
 async fn models(State(state): State<Arc<Mutex<MockState>>>, headers: HeaderMap) -> Response {
     if !authorized(&state.lock().unwrap(), &headers) {
         return StatusCode::UNAUTHORIZED.into_response();
@@ -168,6 +191,7 @@ pub async fn start(port: u16, api_key: Option<&str>) -> Mock {
     let app = Router::new()
         .route("/v1/chat/completions", post(chat))
         .route("/v1/models", get(models))
+        .route("/v1/embeddings", post(embeddings))
         .route("/metrics", get(metrics))
         .with_state(state.clone());
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await.expect("bind mock");

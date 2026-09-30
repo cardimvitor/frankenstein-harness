@@ -1,5 +1,6 @@
 pub mod bm25;
 pub mod design;
+pub mod embed;
 pub mod frontmatter;
 pub mod gate;
 pub mod miner;

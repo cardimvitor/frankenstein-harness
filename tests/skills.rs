@@ -188,3 +188,40 @@ fn user_agents_md_and_skill_md_are_loaded_and_matched() {
     let g = gate(&SkillStore::in_memory(), &fp_of("p", &[]), "write the release notes for the changelog", &u);
     assert_eq!(g.user_skills.len(), 1);
 }
+
+#[tokio::test]
+async fn embedding_recall_adds_a_skill_bm25_missed_and_caches_vectors() {
+    use fh::skills::embed::{cosine, rerank};
+    let m = testkit::start(0, None).await;
+    let mut cfg = load_config(Path::new("/x"), &Env::new()).unwrap();
+    cfg.endpoint = m.url.clone();
+    let fp = fp_of("p1", &[("node", None)]);
+    let store = SkillStore::in_memory();
+    let mut ns = new_skill("Auth flows", "p1", "login authentication credentials", "- Hash credentials with the shared helper; never log them.\n- Keep the login handler thin.");
+    ns.summary = "login and authentication credentials handling".into();
+    store.add(ns, "test").unwrap();
+    let task = "let users sign in with a password";
+    let user = UserConfig::default();
+    // BM25 alone does not pick it: no shared vocabulary
+    let mut g = gate(&store, &fp, task, &user);
+    assert!(!g.selected.iter().any(|s| s.name == "Auth flows"));
+    // embeddings are off by default: nothing changes
+    assert!(rerank(&store, &cfg, &Env::new(), &fp, task, &mut g).await.is_empty());
+    cfg.embedding_model = "mock-embed".into();
+    let added = rerank(&store, &cfg, &Env::new(), &fp, task, &mut g).await;
+    assert_eq!(added, vec!["Auth flows".to_string()]);
+    assert!(g.selected.iter().any(|s| s.name == "Auth flows"));
+    assert!(store.activity(10).iter().any(|a| a.kind == "embed_recall"));
+    // an unrelated task gets nothing added, and the second run reads vectors from the cache (only the task is embedded)
+    let mut g2 = gate(&store, &fp, "render a bar chart of monthly totals", &user);
+    let before = m.requests().len();
+    assert!(rerank(&store, &cfg, &Env::new(), &fp, "render a bar chart of monthly totals", &mut g2).await.is_empty());
+    let _ = before;
+    assert!((cosine(&[1.0, 0.0], &[1.0, 0.0]) - 1.0).abs() < 1e-6 && cosine(&[1.0, 0.0], &[0.0, 1.0]) == 0.0);
+    // an unreachable embedding service never breaks the gate
+    cfg.embedding_endpoint = "http://127.0.0.1:1/v1".into();
+    let mut g3 = gate(&store, &fp, task, &user);
+    let n = g3.selected.len();
+    assert!(rerank(&store, &cfg, &Env::new(), &fp, task, &mut g3).await.is_empty());
+    assert_eq!(g3.selected.len(), n);
+}

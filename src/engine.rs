@@ -377,6 +377,13 @@ impl Engine {
         let user = load_user_config(&self.cwd);
         let mut g = gate(&self.store, &fp, task, &user);
         timings.gate_ms = g.ms;
+        if !self.cfg.embedding_model.is_empty() {
+            let te = Instant::now();
+            for n in crate::skills::embed::rerank(&self.store, &self.cfg, &self.env, &fp, task, &mut g).await {
+                io.notice(NoticeKind::Skill, &format!("added skill \"{n}\" by embedding similarity"));
+            }
+            timings.gate_ms += te.elapsed().as_secs_f64() * 1000.0;
+        }
         for s in &g.selected {
             io.notice(NoticeKind::Skill, &format!("using {} skill \"{}\"", s.scope.as_str(), s.name));
         }
