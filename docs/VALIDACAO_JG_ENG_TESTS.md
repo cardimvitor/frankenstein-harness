@@ -9,18 +9,18 @@ Nomes usados aqui: **Frankenstein V2** é o modelo (Qwen3.8-27B NVFP4 + MTP=3 no
 - GPU: `<ex.: RTX PRO 6000 Blackwell 96 GB>`
 - WORKDIR: `<ex.: /workspace/harness-eval>` (precisa de ~150 GB livres: 6 execuções × 130 cópias com node_modules e bin/obj)
 - FRANKENSTEIN_HARNESS: repositório https://github.com/cardimvitor/frankenstein-harness, branch `ccr-3bc51f62-prkdq0`. Compilar com `cargo build --release` e usar `target/release/fh`. Registre o commit.
-- EXERCICIOS_EM_PARALELO: 4 (igual para todos os harnesses)
+- EXERCICIOS_EM_PARALELO: rampa 4 → 8 → 12 → 16 → 20, com teto N_MAX = 20 (seção 5.0a). A escala de rampa é a mesma para todos os harnesses
 - TIMEOUT_POR_EXERCICIO: 900 s de parede, contando do início do harness até o processo terminar
 - REPETICOES: 1 (3 se houver tempo, só para os 2 melhores harnesses)
 - AMOSTRAGEM: temperatura 1,0, top_p 0,95, top_k 20, igual para todos e imposta pelo proxy (seção 2)
 - EXECUTAR_ATE: fase `<0 a 6>`
 
-Estimativa de tempo, para planejar: no pior caso (todos os exercícios estourando o timeout) são 130 × 900 s ÷ 4 ≈ 8 h por harness, ou ~48 h para as 6 execuções. O normal fica bem abaixo disso. A sessão precisa conseguir retomar sem refazer o que já terminou (seção 4.0).
+Estimativa de tempo, para planejar: com a rampa até 20 em paralelo, o pior caso (todos os exercícios estourando o timeout) cai de ~8 h para ~2 h por harness, ou ~12 h para as 6 execuções, mais a calibração. O normal fica bem abaixo disso. A sessão precisa conseguir retomar sem refazer o que já terminou (seção 4.0).
 
 ## 0. Regras que valem a sessão inteira
 1. Os agentes avaliados só veem a pasta `exercise/` de cada desafio. Nunca `solution/`, `grader/`, `EVALUATION.md`, o `.git` do jg-eng-tests, outros exercícios ou resultados de outros harnesses. Você (operador) nunca resolve exercício, nunca dá dica e nunca cola conteúdo do grader em prompt.
 2. Um modelo só: o Frankenstein V2 servido pelo nosso vLLM. Nenhum harness pode chamar modelo externo. Bloqueie a saída de rede dos agentes (só o proxy local é alcançável) e prove pelos logs do proxy e do firewall que 100% das chamadas de modelo foram para o vLLM local.
-3. Mesmo prompt de tarefa para todos os harnesses, mesmo timeout, mesma concorrência de exercícios, mesma amostragem, mesma ordem de exercícios (a do `catalog.json`).
+3. Mesmo prompt de tarefa para todos os harnesses, mesmo timeout, a mesma escala de concorrência de exercícios (a rampa da seção 5.0a, amarrada à posição do exercício no catálogo), mesma amostragem, mesma ordem de exercícios (a do `catalog.json`).
 4. Cada harness roda num vLLM recém-iniciado (processo novo, cache vazio). O mesmo vale entre os dois modos do Frankenstein Harness.
 5. Não mude a configuração do servidor entre harnesses. Se algo precisar mudar, rode como variante separada, com nome próprio, fora da comparação principal.
 6. Não grave chaves ou tokens em arquivo, log ou relatório. Nos logs, identifique chaves pelo SHA-256 truncado.
@@ -66,7 +66,7 @@ Base: Qwen3.8-27B em NVFP4 (checkpoint `nvidia/Qwen3.8-27B-NVFP4`, revisão `dbb
       --kv-cache-dtype fp8 \
       --enable-prefix-caching \
       --max-model-len 131072 \
-      --max-num-seqs 16 \
+      --max-num-seqs 64 \
       --gpu-memory-utilization 0.90 \
       --override-generation-config '{"temperature":1.0,"top_p":0.95,"top_k":20}' \
       --host 127.0.0.1 --port 8000
@@ -75,7 +75,8 @@ Notas:
 - `max-model-len`: 131072 se couber na GPU; mínimo 65536. Na rodada anterior, 32768 estourou num exercício, e Claude Code e OpenCode têm prompt de sistema grande. Registre o valor usado e use o mesmo valor em `FH_CONTEXT_WINDOW` (seção 5.5).
 - Se o servidor travar ao iniciar com MTP no Blackwell (SM120), aplique a correção que resolveu antes: `--quantization modelopt_fp4 --block-size 128` com `VLLM_HAS_FLASHINFER_CUBIN=1`. Registre qual foi usado.
 - Confira cada flag com `vllm serve --help` da versão instalada; não use sintaxe de memória. Se `--override-generation-config` não existir, use o equivalente da versão e registre. De qualquer forma, o proxy impõe a amostragem (seção 3), porque os harnesses mandam os próprios valores por requisição e o padrão do servidor não os sobrescreve.
-- `max-num-seqs 16` foi validado na PRO 5000. Se a GPU for maior, pode subir, mas o valor é fixo para todos os harnesses.
+- `max-num-seqs`: 16 foi validado na PRO 5000, mas com até 20 exercícios em paralelo (e o modo máximo do `fh` abrindo vários workers por exercício), 16 vira fila na hora. Suba para 64 na PRO 6000 de 96 GB. Na calibração (seção 5.0a), confira no `/metrics` se o uso de KV cache passa de 95% ou se há preempções. Se passar, reduza para 48 ou 32 e registre. Uma vez escolhido, o valor é fixo para todos os harnesses.
+- Com MTP, o ganho da especulação cai quando o lote cresce: a GPU deixa de estar ociosa entre tokens. É por isso que a rampa mede tok/s e aceitação a cada degrau. Se a calibração mostrar que acima de certo N o MTP piora o agregado, registre como achado. Não desligue o MTP no meio: isso seria uma variante separada.
 - Reinício "limpo" = matar o processo, esperar a VRAM voltar ao repouso no `nvidia-smi`, subir de novo e esperar `GET /v1/models` responder. O cache de prefixo morre com o processo; não é preciso mais nada.
 - Teste de fumaça, a cada reinício e antes de cada harness:
   1. Uma chamada simples.
@@ -135,7 +136,7 @@ Prompt de tarefa, idêntico para todos:
 ## 5. Fase 4: execução, nesta ordem
 
 ### 5.0 Mecânica comum a todos
-- Um orquestrador (script do operador) percorre os exercícios na ordem do `catalog.json`, com 4 em paralelo.
+- Um orquestrador (script do operador) percorre os exercícios na ordem do `catalog.json`, com a concorrência dada pela rampa da seção 5.0a.
 - Estado em `WORKDIR/state.json` com a situação de cada par (harness, exercício): pendente, rodando, terminado, erro de infra, timeout. Se a sessão cair, retome pelo estado sem refazer o que terminou; um exercício que estava "rodando" é refeito do zero, com cópia nova.
 - Timeout de 900 s: mate o grupo de processos inteiro (ou o contêiner) e marque `timeout`. O que ficou no disco é corrigido normalmente; timeout conta como tentativa válida, não como erro de infraestrutura.
 - Guarde stdout/stderr de cada execução, o código de saída, o `git diff` final contra o commit "base" e a última mensagem do agente.
@@ -144,6 +145,44 @@ Prompt de tarefa, idêntico para todos:
 - Antes de cada harness: um piloto com 3 exercícios, um .NET, um React e um Angular, por exemplo 01, 07 e o primeiro Angular do catálogo. Os pilotos entram num servidor reiniciado depois e não contam. Servem para validar a configuração: a chamada chegou ao proxy com a chave certa, o harness escreveu arquivos, rodou `test.sh`. Se o piloto revelar erro de configuração do harness, corrija a *configuração* (nunca o prompt de tarefa) e repita o piloto. Depois disso, reinicie o vLLM e rode os 130.
 - Para cada item: reiniciar o vLLM, esperar ficar pronto, teste de fumaça, rodar os 130 exercícios, corrigir com o grader, parar o servidor.
 - Se um harness falhar em mais de 5 dos 10 primeiros exercícios por erro de infraestrutura, pare esse harness, marque UNSUPPORTED com evidência e siga para o próximo.
+
+### 5.0a Paralelização entre exercícios: rampa até 20
+O objetivo é fazer o conjunto inteiro terminar mais rápido, rodando vários exercícios ao mesmo tempo, sem estragar a comparação. Duas partes:
+
+**1. Calibração (uma vez, antes do primeiro harness, fora da comparação).**
+- Servidor recém-iniciado, com o `fh` no modo 1 agente e os primeiros 40 exercícios do catálogo. Essas execuções não contam e são descartadas.
+- Degraus de concorrência de exercícios: 4, 8, 12, 16, 20. Cada degrau dura pelo menos 10 minutos ou 8 exercícios concluídos, o que vier por último. Um exercício novo só entra quando outro termina, para manter N constante no degrau.
+- No fim de cada degrau, imprima e grave em `WORKDIR/calibracao.csv`:
+  - tok/s de saída por fluxo: mediana e P10;
+  - tok/s agregado: saída total ÷ tempo do degrau;
+  - requisições rodando e em fila, média e pico;
+  - uso de KV cache, média e pico, e preempções;
+  - TTFT P50 e P90;
+  - aceitação do MTP;
+  - potência média da GPU;
+  - erros e timeouts.
+- **Critério de parada da rampa.** Pare de subir, e fique no último degrau bom como N_MAX, se no degrau seguinte acontecer qualquer um destes:
+  - o agregado ganhar menos de 10% em relação ao degrau anterior;
+  - o tok/s mediano por fluxo cair abaixo de 40% do medido com 4 em paralelo;
+  - o KV cache passar de 95% de forma sustentada, ou aparecerem preempções;
+  - o TTFT P90 passar de 30 s;
+  - surgir qualquer erro 5xx ou falta de memória.
+
+  Se nada disso acontecer, N_MAX = 20. Registre a decisão com os números no relatório: tabela e gráfico de tok/s por fluxo e agregado contra N.
+
+**2. Execução principal (todos os harnesses, mesma escala).**
+- A concorrência depende da posição do exercício no catálogo, não do harness:
+  - exercícios 1–10: 4 em paralelo;
+  - 11–20: 8;
+  - 21–30: 12;
+  - 31–40: 16;
+  - 41–130: N_MAX, no máximo 20.
+
+  Se N_MAX ficou abaixo de 20, os degraus acima dele são pulados. Assim cada exercício roda, em todos os harnesses, sob a mesma concorrência de exercícios, e a comparação exercício a exercício continua justa.
+- Durante a execução, a cada degrau e depois a cada 10 exercícios concluídos, imprima a mesma linha de números da calibração, com o harness e o N atual, e grave-a em `WORKDIR/runs/<harness>/tps.csv`.
+- Freio de segurança. Se, durante a execução de um harness, aparecer erro 5xx, falta de memória ou KV cache acima de 98% por mais de 2 minutos, pare de lançar exercícios novos até a fila esvaziar e depois continue no mesmo N. Nunca mude a configuração do servidor. Registre cada acionamento, com horário; é resultado do harness.
+- O timeout continua 900 s de parede em todos os degraus. Se a calibração mostrar que o tok/s por fluxo em N_MAX cai para menos da metade do de N=4, reporte a taxa de timeout por degrau e mostre separadamente os exercícios que estouraram o tempo nos degraus altos.
+- O modo máximo do `fh` soma workers aos exercícios paralelos: com 20 exercícios, pode haver bem mais de 20 requisições ao mesmo tempo. Não reduza o N desse modo; a disputa pela GPU é o custo do fan-out e aparece como fila no relatório.
 
 ### 5.1 OpenCode
 Provedor OpenAI-compatível (`@ai-sdk/openai-compatible`) apontando para `http://<proxy>:8001/v1`, modelo `frankenstein-v2`, com a chave do exercício. Confira a sintaxe de provedor customizado e do modo não interativo (`opencode run`) na documentação da versão instalada. Use as mesmas permissões da rodada anterior: bash restrito a `scripts/test.sh`, `lint.sh`, `setup.sh`, `git status`/`git diff` e `pwd`; sem web, sem subagentes, sem skills. Desligue compartilhamento e atualização automática. Registre a configuração exata (sem a chave).
@@ -201,7 +240,7 @@ Pontos obrigatórios:
 - **Achado a observar no piloto:** o `fh` infere os comandos de verificação pelo tipo de projeto (`dotnet build/test`, `npm test` etc.). Ele não conhece `scripts/test.sh`, que aqui roda um programa de console e não um projeto de teste. Registre quais checks ele rodou e se algum falhou por comando errado. Não mude o `fh` durante a execução (regra 8).
 
 ### 5.6 Frankenstein Harness, modo máximo de agentes
-Mesmo comando, com `maxConcurrency` igual ao `max-num-seqs` do servidor (16). Isso não força 16 agentes. É o teto: o planejador divide a tarefa em até 16 subtarefas com arquivos disjuntos, só quando elas são independentes. O regulador começa com 2 simultâneos e sobe conforme o `/metrics`. Também podem surgir workers "extra" para arquivos que ninguém possuía e um corretor por diretório em rodadas de reparo. Todos ficam restritos à pasta, pelo contêiner.
+Mesmo comando, com `maxConcurrency: 16` (o teto de workers por exercício, independente do `max-num-seqs`). Isso não força 16 agentes. É o teto: o planejador divide a tarefa em até 16 subtarefas com arquivos disjuntos, só quando elas são independentes. O regulador começa com 2 simultâneos e sobe conforme o `/metrics`. Também podem surgir workers "extra" para arquivos que ninguém possuía e um corretor por diretório em rodadas de reparo. Todos ficam restritos à pasta, pelo contêiner.
 
 Registre por exercício:
 - subtarefas planejadas;
@@ -224,6 +263,9 @@ Com `max-num-seqs` fixo, esse modo pode saturar; isso é resultado, não erro. R
   - entrada, cache, entrada sem cache, saída e raciocínio (estimado);
   - total por exercício e por harness;
   - tokens por exercício aprovado, total e sem cache.
+- **Velocidade por degrau de concorrência (4, 8, 12, 16, 20):**
+  - tok/s por fluxo e agregado, fila, KV cache, TTFT, aceitação do MTP e potência, em cada degrau e por harness;
+  - a curva de tok/s agregado contra N é o gráfico principal desta parte.
 - **Velocidade:**
   - tok/s por fluxo (saída ÷ (duração − TTFT)) e agregado;
   - concorrência média e de pico (do log do proxy);
@@ -246,6 +288,11 @@ Com `max-num-seqs` fixo, esse modo pode saturar; isso é resultado, não erro. R
 - **Comparação pareada.** Exercício a exercício, entre cada par de harnesses: teste binomial exato bicaudal nos pares discordantes (McNemar exato) e intervalo de 95% da diferença de taxas por bootstrap pareado (10 000 reamostragens, semente fixa registrada). Corrija as comparações múltiplas por Holm. Não diga "melhor" sem apoio estatístico; use "sem diferença conclusiva" quando for o caso. Com 130 exercícios, diferenças de poucos pontos quase nunca são conclusivas; diga isso.
 - **Recortes.** Resultados por trilha, stack (.NET, React, Angular) e nível.
 - **Por tipo.** Exercícios cujo código inicial devolve `<unimplemented>` (contrato de saída implícito) contra os que já têm código real.
+- **Escala.** O que a paralelização entre exercícios rendeu:
+  - tempo total de parede real contra o estimado se todos tivessem rodado com 4 em paralelo (soma das durações ÷ 4);
+  - tok/s agregado e por fluxo por degrau;
+  - onde a curva achata e o motivo: KV cache, fila ou queda da aceitação do MTP.
+  - Diga também se a aprovação mudou entre degraus. Como os degraus seguem a ordem do catálogo, qualquer diferença mistura dificuldade com concorrência. Aponte a confusão e não conclua causalidade.
 - **1 agente contra máximo.** Aplique a regra de fan-out do projeto (`docs/FANOUT.md`), que vale para exercícios em que houve divisão. O modo máximo compensa se não perder qualidade e se: (a) a mediana de tempo ficar ≤ 80% da do modo 1 agente, ou a aprovação subir pelo menos 5 pontos; e (b) os tokens sem cache por exercício aprovado ficarem ≤ 2× os do modo 1 agente. Mostre também o resultado para todos os 130.
 - **Com repetições.** Se houver repetições, reporte a média por exercício e a variância entre elas. As estatísticas pareadas usam a taxa média por exercício.
 - **Referência externa**, marcada como ambiente diferente e fora das estatísticas: a rodada anterior do Frankenstein V2 com harness caseiro (57,7%, temperatura 0,2) e os resultados do Claude Opus 5.5 (50,0%) e do Sonnet 5.5 (47,7%) no Claude Code.
@@ -263,13 +310,13 @@ Use também o sinal empírico: critérios que nenhum harness passou e critérios
 
 ### Entregáveis em `WORKDIR/relatorio/`
 1. `relatorio.md` e `relatorio.txt` com toda a análise e todos os números. Primeira seção: resumo de uma página com o ranking, a comparação 1 agente × máximo e a lista de NOT_RUN/UNSUPPORTED.
-2. `relatorio.pdf` com tabelas e gráficos: ranking com intervalos, tokens, tempo e velocidade por harness, aprovação por trilha/stack/nível, e 1 agente × máximo.
+2. `relatorio.pdf` com tabelas e gráficos: ranking com intervalos, tokens, tempo e velocidade por harness, aprovação por trilha/stack/nível, tok/s por fluxo e agregado contra o número de exercícios em paralelo (calibração e cada harness), e 1 agente × máximo.
 3. `results.csv` e `results.json` por exercício e harness, os logs do proxy, do `/metrics` e do `nvidia-smi`, e os JSONs do grader.
 4. `MANIFEST.json`:
    - commits (jg-eng-tests e `fh`);
    - versões (vLLM, CUDA, driver, cada harness, LiteLLM se usado, .NET, Node, pwsh, language servers, digest da imagem);
    - o comando exato do servidor e as flags de fallback usadas;
-   - amostragem imposta, `max-model-len`, concorrência;
+   - amostragem imposta, `max-model-len`, `max-num-seqs` final, N_MAX e a escala de rampa usada;
    - método de identificação por harness, regra de firewall;
    - horários de início e fim de cada fase e de cada harness.
 
