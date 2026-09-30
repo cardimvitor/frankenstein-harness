@@ -138,3 +138,40 @@ fn signals_and_telemetry_are_counted() {
     mark_handled(ws.path());
     assert_eq!(read_last_task(ws.path()).unwrap()["handled"], true);
 }
+
+#[test]
+fn search_ranks_sessions_scopes_to_a_project_and_redacts_secrets() {
+    use fh::session::log::SessionLog;
+    use fh::session::search::search;
+    let home = tempfile::tempdir().unwrap();
+    let mut env = env_home(home.path());
+    env.insert("FH_API_KEY".into(), "super-secret-token-value-123".into());
+    let mk = |project: &str, task: &str, final_text: &str, files: &[&str]| {
+        let l = SessionLog::create(&env, project);
+        l.append(json!({"t": "start", "task": task, "auto": true}));
+        l.append(json!({"t": "plan", "plan": {"trivial": true, "questions": [], "enriched": task, "acceptance": ["tests pass"], "plan": [{"step": "do it", "files": files}], "assumptions": [], "subtasks": []}}));
+        l.append(json!({"t": "result", "verdict": "pass", "reason": "passed in round 1", "changed": files, "final": final_text}));
+        std::thread::sleep(std::time::Duration::from_millis(3));
+        l.id.clone()
+    };
+    let a = mk("proj-a", "add pagination to the orders endpoint", "Added page and pageSize parameters to OrdersController.", &["src/OrdersController.cs"]);
+    let _b = mk("proj-a", "fix the invoice rounding bug", "Rounded totals with MidpointRounding.AwayFromZero. key super-secret-token-value-123", &["src/Invoice.cs"]);
+    let c = mk("proj-b", "paginate the users list", "Users pagination done.", &["users.ts"]);
+    // ranked: the orders task answers "pagination orders", scoped to one project
+    let hits = search(&env, Some("proj-a"), "pagination orders", 5);
+    assert_eq!(hits.first().map(|h| h.id.clone()), Some(a.clone()));
+    assert!(hits.iter().all(|h| h.project == "proj-a"));
+    assert!(hits[0].snippet.to_lowercase().contains("pagination") || hits[0].snippet.to_lowercase().contains("orders"), "{}", hits[0].snippet);
+    // every project
+    let all = search(&env, None, "pagination", 5);
+    assert_eq!(all.len(), 2);
+    assert!(all.iter().any(|h| h.id == c && h.project == "proj-b"));
+    // file names and the delivered answer are searchable; secrets are redacted in snippets
+    let by_file = search(&env, Some("proj-a"), "Invoice.cs", 5);
+    assert_eq!(by_file.len(), 1);
+    let secret = search(&env, Some("proj-a"), "MidpointRounding", 5);
+    assert!(!secret[0].snippet.contains("super-secret-token-value-123"), "{}", secret[0].snippet);
+    // no match and empty queries
+    assert!(search(&env, None, "kubernetes", 5).is_empty());
+    assert!(search(&env, None, "   ", 5).is_empty());
+}

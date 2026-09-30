@@ -82,6 +82,16 @@ pub async fn run_tui(cfg: Config, env: Env, cwd: PathBuf, store: SkillStore, o: 
                     t.cancel();
                 }
             }
+            Action::Search(q) => {
+                let fp = crate::fingerprint::fingerprint(&cwd);
+                let hits = crate::session::search::search(&env, Some(&fp.project_id), &q, 6);
+                if hits.is_empty() {
+                    app.apply(UiEvent::Notice(crate::engine::NoticeKind::Info, format!("no past tasks match \"{q}\"")));
+                }
+                for h in hits {
+                    app.apply(UiEvent::Notice(crate::engine::NoticeKind::Info, format!("{}  {:<10} {} — {}", h.id, h.verdict.clone().unwrap_or_else(|| "interrupted".into()), h.task.chars().take(50).collect::<String>(), h.snippet.chars().take(90).collect::<String>())));
+                }
+            }
             Action::Sessions => {
                 let fp = crate::fingerprint::fingerprint(&cwd);
                 let rows = crate::session::log::list(&env, &fp.project_id);

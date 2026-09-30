@@ -216,7 +216,7 @@ fn modal_lines(app: &App, width: usize) -> (String, Vec<Line<'static>>) {
             " Reuse skills? ".to_string()
         }
         Modal::Help => {
-            for s in ["Enter          send the task", "Alt+Enter      new line (Ctrl+J also works)", "Tab            cycle approvals: plan → ask → auto-edit → full auto", "Ctrl+A         toggle Autonomous (no questions, up to 5 verification rounds)", "Ctrl+T         show/hide the model's thinking", "PgUp / PgDn    scroll the conversation", "Esc            stop the running task", "Ctrl+C         stop the task; press again when idle to quit", "Ctrl+D         quit (when the input is empty)", "/sessions      list this repository's task sessions", "/resume [id]   continue an interrupted task with its stored plan", "/exit          quit"] {
+            for s in ["Enter          send the task", "Alt+Enter      new line (Ctrl+J also works)", "Tab            cycle approvals: plan → ask → auto-edit → full auto", "Ctrl+A         toggle Autonomous (no questions, up to 5 verification rounds)", "Ctrl+T         show/hide the model's thinking", "PgUp / PgDn    scroll the conversation", "Esc            stop the running task", "Ctrl+C         stop the task; press again when idle to quit", "Ctrl+D         quit (when the input is empty)", "/sessions      list this repository's task sessions", "/search <words> search past tasks", "/resume [id]   continue an interrupted task with its stored plan", "/exit          quit"] {
                 add(s, Style::default());
             }
             add("Press any key to close.", dim());

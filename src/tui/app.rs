@@ -36,6 +36,8 @@ pub enum Action {
     Resume(Option<String>),
     /// list this repository's sessions
     Sessions,
+    /// search past task sessions
+    Search(String),
 }
 
 pub struct App {
@@ -236,6 +238,11 @@ impl App {
                 if self.busy {
                     self.items.push(Item::Notice(NoticeKind::Warn, "a task is running; press Esc to stop it".into()));
                     return Action::None;
+                }
+                if t.starts_with("/search ") {
+                    self.input.clear();
+                    self.cursor = 0;
+                    return Action::Search(t["/search ".len()..].trim().to_string());
                 }
                 if t == "/sessions" {
                     self.input.clear();

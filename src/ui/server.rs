@@ -368,6 +368,68 @@ async fn file(State(app): State<Arc<App>>, headers: HeaderMap, axum::extract::Qu
     Json(json!({"path": rel, "binary": false, "size": bytes.len(), "truncated": truncated, "content": redact(&text, &app.engine.env)})).into_response()
 }
 
+const MAX_MATCHES: usize = 200;
+const PER_FILE: usize = 5;
+
+/// Case-insensitive literal search in the workspace: matching file names first, then matching lines.
+/// `kind=sessions` searches past task sessions of this repository instead.
+async fn search(State(app): State<Arc<App>>, headers: HeaderMap, axum::extract::Query(q): axum::extract::Query<HashMap<String, String>>) -> Response {
+    if !authed(&app, &headers) {
+        return err(StatusCode::UNAUTHORIZED, "not authenticated");
+    }
+    let query = q.get("q").map(|s| s.trim().to_string()).unwrap_or_default();
+    if query.is_empty() || query.len() > 200 {
+        return err(StatusCode::BAD_REQUEST, "q required (at most 200 characters)");
+    }
+    if q.get("kind").map(|k| k == "sessions").unwrap_or(false) {
+        let hits = crate::session::search::search(&app.engine.env, Some(&app.project_id), &query, 20);
+        return Json(json!({"sessions": hits.into_iter().map(|h| json!({"id": h.id, "started": h.started, "verdict": h.verdict, "task": h.task, "snippet": h.snippet})).collect::<Vec<_>>()})).into_response();
+    }
+    let (cwd, env) = (app.engine.cwd.clone(), app.engine.env.clone());
+    let out = tokio::task::spawn_blocking(move || {
+        let needle = query.to_lowercase();
+        let files = crate::tools::fs::list_all(&cwd, 3000);
+        let mut names: Vec<&String> = files.iter().filter(|f| f.to_lowercase().contains(&needle)).collect();
+        // a match in the file's own name ranks above a match in a directory name
+        names.sort_by_key(|f| (!f.rsplit('/').next().unwrap_or("").to_lowercase().contains(&needle), f.len()));
+        let names: Vec<String> = names.into_iter().take(30).cloned().collect();
+        let mut matches = Vec::new();
+        let mut truncated = false;
+        'files: for f in &files {
+            if withheld(f) {
+                continue;
+            }
+            let Ok(meta) = std::fs::metadata(cwd.join(f)) else { continue };
+            if meta.len() as usize > FILE_LIMIT {
+                continue;
+            }
+            let Ok(bytes) = std::fs::read(cwd.join(f)) else { continue };
+            if bytes[..bytes.len().min(8000)].contains(&0) {
+                continue;
+            }
+            let text = String::from_utf8_lossy(&bytes);
+            let mut in_file = 0;
+            for (i, line) in text.lines().enumerate() {
+                if line.to_lowercase().contains(&needle) {
+                    matches.push(json!({"path": f, "line": i + 1, "text": redact(&line.trim().chars().take(160).collect::<String>(), &env)}));
+                    in_file += 1;
+                    if matches.len() >= MAX_MATCHES {
+                        truncated = true;
+                        break 'files;
+                    }
+                    if in_file >= PER_FILE {
+                        break;
+                    }
+                }
+            }
+        }
+        json!({"names": names, "matches": matches, "truncated": truncated})
+    })
+    .await
+    .unwrap_or_else(|_| json!({"names": [], "matches": [], "truncated": false}));
+    Json(out).into_response()
+}
+
 async fn sessions(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
     if !authed(&app, &headers) {
         return err(StatusCode::UNAUTHORIZED, "not authenticated");
@@ -509,6 +571,7 @@ pub async fn start_web_server(cfg: Config, env: Env, cwd: PathBuf, o: ServeOptio
         .route("/api/tree", get(tree))
         .route("/api/history", get(history))
         .route("/api/file", get(file))
+        .route("/api/search", get(search))
         .route("/api/sessions", get(sessions))
         .route("/api/resume", post(resume))
         .route("/api/task", post(task))

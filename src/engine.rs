@@ -357,7 +357,7 @@ impl Engine {
                     crate::session::signals::record_task(&self.env, json!({"ts": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0), "verdict": r.verdict, "rounds": r.rounds, "totalMs": r.timings.total_ms, "promptTokens": r.llm.prompt_tokens, "completionTokens": r.llm.completion_tokens, "repaired": r.llm.repaired, "acceptanceRate": r.metrics.acceptance_rate}));
                 }
                 if let Some(sl) = self.session.lock().unwrap().clone() {
-                    sl.append(json!({"t": "result", "verdict": r.verdict, "reason": r.reason, "changed": r.changed}));
+                    sl.append(json!({"t": "result", "verdict": r.verdict, "reason": r.reason, "changed": r.changed, "final": r.final_text.chars().take(3000).collect::<String>()}));
                 }
                 self.hooks.fire(crate::hooks::HookEvent::Stop, json!({"verdict": r.verdict, "reason": r.reason, "changed": r.changed})).await;
                 return r;

@@ -29,6 +29,7 @@ Usage:
   fh eval --tasks <dir> [options]   run the eval corpus (--runner fh|fh-single|qwen|both|all|orch)
   fh undo                     restore the working tree to the last checkpoint
   fh keep                     apply the last rejected patch anyway (recorded as a verifier false positive)
+  fh search <words> [--all]   search past task sessions (this repository, or every one with --all)
   fh sessions                 list task sessions of this repository (interrupted ones can be resumed)
   fh resume [id]              continue an interrupted session with its stored plan and checkpoint
   fh record <id> --prompt \"..\" --oracle \"cmd\" [--base rev] [--solution rev] [--out eval/tasks]
@@ -300,6 +301,22 @@ pub async fn main(argv: Vec<String>) -> i32 {
                     Ok(()) => println!("trusting {}: its .fh/hooks.json and .fh/mcp.json will now run", cwd.display()),
                     Err(e) => eprintln!("{e}"),
                 }
+            }
+            return 0;
+        }
+        "search" => {
+            let query = args.positional.join(" ");
+            if query.trim().is_empty() {
+                eprintln!("usage: fh search <words> [--all] [--limit N]");
+                return 2;
+            }
+            let fp = crate::fingerprint::fingerprint(&cwd);
+            let hits = crate::session::search::search(&env, if args.has("all") { None } else { Some(fp.project_id.as_str()) }, &query, args.get("limit").and_then(|s| s.parse().ok()).unwrap_or(10));
+            if hits.is_empty() {
+                println!("no past tasks match \"{query}\"{}", if args.has("all") { "" } else { " in this repository (try --all)" });
+            }
+            for h in hits {
+                println!("{}  {:<11} {}\n    {}", h.id, h.verdict.clone().unwrap_or_else(|| "interrupted".into()), bold(&h.task), dim(&h.snippet));
             }
             return 0;
         }

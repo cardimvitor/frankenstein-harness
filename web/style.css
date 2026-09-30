@@ -106,3 +106,10 @@ dialog::backdrop { background: rgba(0,0,0,.5); }
 .viewer-head { display: flex; justify-content: space-between; align-items: center; gap: var(--s3); padding: var(--s3) var(--s4); border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--surface); }
 .viewer-head strong { font-family: var(--mono); font-size: 14px; overflow-wrap: anywhere; }
 .viewer-body { padding: var(--s3) var(--s4) var(--s4); overflow: auto; max-height: calc(88vh - 64px); }
+
+/* search */
+.searchbar { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: var(--s2); }
+.searchbar input { padding: 6px 10px; }
+.result-btn { display: block; width: 100%; min-height: 28px; text-align: left; padding: 2px var(--s2); border: none; background: transparent; font: inherit; font-weight: 400; font-size: 13px; font-family: var(--mono); color: var(--text); overflow-wrap: anywhere; cursor: pointer; border-radius: 6px; }
+.result-btn:hover { background: var(--surface-2); }
+.cl.hit { background: var(--add-bg); }

@@ -131,7 +131,7 @@ async function loadSideData() {
   await loadSessions();
 }
 
-async function openFile(path) {
+async function openFile(path, line) {
   const r = await api(`/api/file?path=${encodeURIComponent(path)}`);
   const dlg = $('viewer'), body = $('viewer-body');
   $('viewer-title').textContent = path; body.replaceChildren();
@@ -140,7 +140,8 @@ async function openFile(path) {
   else {
     if (lastDiff && parseDiff(lastDiff).some((f) => f.path === path)) { const d = el('details', 'viewer-changes'); d.open = true; d.append(el('summary', '', 'Changes from the last task'), renderDiff(lastDiff, path)); body.append(d); }
     if (r.json.truncated) body.append(el('p', 'muted small', `Showing the first ${r.json.content.length} characters of ${r.json.size} bytes.`));
-    body.append(renderCode(path, r.json.content));
+    const code = renderCode(path, r.json.content); body.append(code);
+    if (line) { const row = code.children[line - 1]; if (row) { row.classList.add('hit'); setTimeout(() => row.scrollIntoView({ block: 'center' }), 0); } }
   }
   if (typeof dlg.showModal === 'function') dlg.showModal(); else dlg.setAttribute('open', '');
 }
@@ -179,5 +180,23 @@ $('composer').addEventListener('submit', async (e) => {
 });
 $('task').addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); $('composer').requestSubmit(); } });
 $('cancel').addEventListener('click', () => api('/api/cancel', {}));
+$('search-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const q = $('search-q').value.trim(), kind = $('search-kind').value, l = $('search-results');
+  if (!q) return;
+  l.replaceChildren(el('li', 'muted', 'Searching…'));
+  const r = await api(`/api/search?kind=${kind}&q=${encodeURIComponent(q)}`);
+  l.replaceChildren();
+  if (!r.ok) { l.append(el('li', 'error', r.json.error || 'Search failed')); return; }
+  if (kind === 'sessions') {
+    if (!r.json.sessions.length) l.append(el('li', 'muted', 'No past tasks match'));
+    for (const s of r.json.sessions) { const li2 = el('li', s.verdict === 'pass' ? 'ok' : s.verdict ? 'fail' : 'skip'); li2.append(el('strong', '', `${s.verdict ?? 'interrupted'} · ${s.task}`), el('div', 'muted small', s.snippet)); l.append(li2); }
+    return;
+  }
+  for (const f of r.json.names) { const li2 = el('li'); const b = el('button', 'result-btn', f); b.type = 'button'; b.onclick = () => openFile(f); li2.append(b); l.append(li2); }
+  for (const m of r.json.matches) { const li2 = el('li'); const b = el('button', 'result-btn'); b.type = 'button'; b.append(el('span', 'muted', `${m.path}:${m.line}  `), document.createTextNode(m.text)); b.onclick = () => openFile(m.path, m.line); li2.append(b); l.append(li2); }
+  if (!r.json.names.length && !r.json.matches.length) l.append(el('li', 'muted', 'Nothing found'));
+  if (r.json.truncated) l.append(el('li', 'muted small', 'More matches exist; refine the search.'));
+});
 $('viewer-close').addEventListener('click', () => $('viewer').close());
 boot();

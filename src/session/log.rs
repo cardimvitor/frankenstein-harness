@@ -76,11 +76,14 @@ pub struct SessionInfo {
     pub reason: String,
     pub history: Option<Vec<Message>>,
     pub started: u64,
+    /// the delivered answer and the files changed (empty for sessions recorded before these were kept)
+    pub final_text: String,
+    pub changed: Vec<String>,
 }
 
-fn parse(dir: &std::path::Path, id: &str) -> Option<SessionInfo> {
+pub fn parse(dir: &std::path::Path, id: &str) -> Option<SessionInfo> {
     let text = std::fs::read_to_string(dir.join(format!("{id}.jsonl"))).ok()?;
-    let mut info = SessionInfo { id: id.to_string(), task: String::new(), auto: false, plan: None, checkpoint: None, verdict: None, reason: String::new(), history: None, started: 0 };
+    let mut info = SessionInfo { id: id.to_string(), task: String::new(), auto: false, plan: None, checkpoint: None, verdict: None, reason: String::new(), history: None, started: 0, final_text: String::new(), changed: vec![] };
     for l in text.lines() {
         let Ok(v) = serde_json::from_str::<Value>(l) else { continue };
         match v["t"].as_str() {
@@ -94,6 +97,8 @@ fn parse(dir: &std::path::Path, id: &str) -> Option<SessionInfo> {
             Some("result") => {
                 info.verdict = v["verdict"].as_str().map(|s| s.to_string());
                 info.reason = v["reason"].as_str().unwrap_or("").to_string();
+                info.final_text = v["final"].as_str().unwrap_or("").to_string();
+                info.changed = v["changed"].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect()).unwrap_or_default();
             }
             _ => {}
         }

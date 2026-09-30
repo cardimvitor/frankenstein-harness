@@ -79,6 +79,21 @@ try {
       await page.waitForSelector('dialog#viewer:not([open])', { state: 'attached' });
       // sessions panel lists the finished session
       await page.waitForFunction(() => /pass/.test(document.getElementById('sessions').textContent));
+      // search: file names and lines open the viewer at the line; past tasks are listed
+      await page.fill('#search-q', 'sum_range');
+      await page.click('#search-form button');
+      await page.waitForSelector('#search-results .result-btn');
+      assert.ok((await page.locator('#search-results .result-btn').count()) >= 2);
+      await page.click('#search-results .result-btn:has-text("mathx.py:1")');
+      await page.waitForSelector('dialog#viewer[open]');
+      assert.ok((await page.locator('#viewer .cl.hit').count()) === 1, 'the matching line is highlighted');
+      await page.click('#viewer-close');
+      await page.waitForSelector('dialog#viewer:not([open])', { state: 'attached' });
+      await page.selectOption('#search-kind', 'sessions');
+      await page.fill('#search-q', 'sum_range');
+      await page.click('#search-form button');
+      await page.waitForFunction(() => /pass/.test(document.getElementById('search-results').textContent));
+      await page.selectOption('#search-kind', 'files');
       // markdown coverage and markup safety, through the real module
       const md = await page.evaluate(async () => {
         const { renderMarkdown } = await import('/render.js');

@@ -211,3 +211,11 @@ fn resume_and_sessions_commands() {
     type_str(&mut c, "/resume");
     assert_eq!(c.on_key(key(KeyCode::Enter)), Action::None);
 }
+
+#[test]
+fn search_command_in_the_tui() {
+    let mut a = app();
+    type_str(&mut a, "/search pagination orders");
+    assert_eq!(a.on_key(key(KeyCode::Enter)), Action::Search("pagination orders".into()));
+    assert!(!a.busy && a.input.is_empty());
+}

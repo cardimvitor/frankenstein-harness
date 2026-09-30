@@ -61,6 +61,14 @@
       <ul id="history" class="list"><li class="muted">None yet</li></ul>
       <h2>Sessions</h2>
       <ul id="sessions" class="list"><li class="muted">None yet</li></ul>
+      <h2>Search</h2>
+      <form id="search-form" class="searchbar" role="search">
+        <label for="search-q" class="sr">Search</label>
+        <input id="search-q" type="search" placeholder="Search files or past tasks" autocomplete="off" spellcheck="false">
+        <select id="search-kind" aria-label="What to search"><option value="files">Files</option><option value="sessions">Past tasks</option></select>
+        <button type="submit" class="small-btn">Search</button>
+      </form>
+      <ul id="search-results" class="list"></ul>
       <h2>Workspace</h2>
       <div id="tree" class="tree" role="tree" aria-label="Workspace files"></div>
     </aside>

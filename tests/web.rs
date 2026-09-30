@@ -357,3 +357,44 @@ async fn sessions_list_and_resume_endpoints() {
     assert_eq!(events.iter().find(|(t, _)| t == "result").expect("result").1["verdict"], "pass");
     assert!(std::fs::read_to_string(e.d.path().join("mathx.py")).unwrap().contains("b + 1"));
 }
+
+#[tokio::test]
+async fn search_endpoint_finds_files_lines_and_past_tasks_without_leaking_withheld_files() {
+    let home = tempfile::tempdir().unwrap();
+    let env = env_home(home.path());
+    let e = setup(env.clone()).await;
+    let p = e.srv.port;
+    std::fs::create_dir_all(e.d.path().join("src")).unwrap();
+    std::fs::write(e.d.path().join("src/orders.py"), "def list_orders():\n    return []\n\n# TODO paginate Orders\n").unwrap();
+    std::fs::write(e.d.path().join(".env"), "ORDERS_SECRET=abc\n").unwrap();
+    std::fs::write(e.d.path().join("notes.txt"), "token super-secret-token-value-123 for orders\n").unwrap();
+    std::fs::write(e.d.path().join("blob.bin"), b"orders\0\0orders").unwrap();
+    assert_eq!(http(p, Method::GET, "/api/search?q=orders", &[], None).await.status, 401);
+    let (_, cookie) = login(p, &e.srv.code()).await;
+    let get = |qs: String| {
+        let cookie = cookie.clone();
+        async move { http(p, Method::GET, &format!("/api/search?{qs}"), &[("cookie", &cookie)], None).await }
+    };
+    assert_eq!(get("q=".into()).await.status, 400);
+    let r: Value = serde_json::from_str(&get("q=orders".into()).await.body).unwrap();
+    // the file named orders.py ranks first among names
+    assert_eq!(r["names"][0], "src/orders.py");
+    let lines: Vec<(String, u64)> = r["matches"].as_array().unwrap().iter().map(|m| (m["path"].as_str().unwrap().to_string(), m["line"].as_u64().unwrap())).collect();
+    assert!(lines.contains(&("src/orders.py".to_string(), 1)) && lines.contains(&("src/orders.py".to_string(), 4)), "{lines:?}");
+    // case-insensitive, and neither the .env file nor the binary file is searched; secrets are redacted in the text
+    assert!(!lines.iter().any(|(p, _)| p == ".env" || p == "blob.bin"), "{lines:?}");
+    assert!(!r.to_string().contains("super-secret-token-value-123"));
+    // past tasks
+    let fp = fh::fingerprint::fingerprint(e.d.path());
+    let l = fh::session::log::SessionLog::create(&env, &fp.project_id);
+    l.append(json!({"t": "start", "task": "paginate the orders list", "auto": true}));
+    l.append(json!({"t": "result", "verdict": "pass", "reason": "ok", "changed": ["src/orders.py"], "final": "Added pagination to list_orders."}));
+    let s: Value = serde_json::from_str(&get("kind=sessions&q=pagination".into()).await.body).unwrap();
+    assert_eq!(s["sessions"].as_array().unwrap().len(), 1, "{s}");
+    assert_eq!(s["sessions"][0]["verdict"], "pass");
+    // a match cap keeps the answer bounded
+    std::fs::write(e.d.path().join("many.txt"), "needle\n".repeat(50)).unwrap();
+    std::fs::write(e.d.path().join("many2.txt"), "needle\n".repeat(50)).unwrap();
+    let m: Value = serde_json::from_str(&get("q=needle".into()).await.body).unwrap();
+    assert!(m["matches"].as_array().unwrap().iter().filter(|x| x["path"] == "many.txt").count() <= 5);
+}
