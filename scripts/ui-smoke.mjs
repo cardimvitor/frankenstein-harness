@@ -61,9 +61,39 @@ try {
       await page.waitForSelector('.msg.final.pass', { timeout: 30000 });
       assert.match(await page.textContent('.msg.final'), /Verified/);
       await page.click('.msg.final details summary');
-      assert.match(await page.textContent('.msg.final details pre'), /b \+ 1/);
+      assert.match(await page.textContent('.msg.final .diff'), /b \+ 1/);
       assert.equal(await page.locator('#files li').first().textContent(), 'mathx.py');
       assert.match(await page.textContent('#verify'), /pass/);
+      // per-file, highlighted diff
+      assert.match(await page.textContent('.msg.final .diff-file summary'), /mathx\.py.*\+1 −1/);
+      assert.ok((await page.locator('.msg.final .dl.add').count()) >= 1 && (await page.locator('.msg.final .dl.del').count()) >= 1);
+      assert.ok((await page.locator('.msg.final .dl .tok-kw').count()) >= 1, 'diff lines are syntax highlighted');
+      // file viewer from the workspace tree, with the last task's changes on top
+      await page.click('#tree button.file:has-text("mathx.py")');
+      await page.waitForSelector('dialog#viewer[open]');
+      assert.ok((await page.locator('#viewer .code .cl').count()) >= 5);
+      assert.ok((await page.locator('#viewer .code .tok-kw').count()) >= 1);
+      assert.equal(await page.locator('#viewer .viewer-changes').count(), 1);
+      await page.screenshot({ path: join(out, 'file-viewer-light.png') });
+      await page.click('#viewer-close');
+      await page.waitForSelector('dialog#viewer:not([open])', { state: 'attached' });
+      // sessions panel lists the finished session
+      await page.waitForFunction(() => /pass/.test(document.getElementById('sessions').textContent));
+      // markdown coverage and markup safety, through the real module
+      const md = await page.evaluate(async () => {
+        const { renderMarkdown } = await import('/render.js');
+        const n = renderMarkdown('# Title\n\n| a | b |\n|---|---|\n| 1 | **2** |\n\n1. one\n2. two\n\n[click](javascript:alert(1)) ![x](http://evil/x.png) <img src=x onerror=alert(1)> <script>alert(2)</script>\n\n> quoted');
+        return { th: n.querySelectorAll('th').length, td: n.querySelectorAll('td').length, strongInCell: !!n.querySelector('td strong'), ol: n.querySelectorAll('ol li').length, h: !!n.querySelector('h3'), quote: !!n.querySelector('blockquote'), anchors: n.querySelectorAll('a,img,script,iframe').length, text: n.textContent };
+      });
+      assert.deepEqual([md.th, md.td, md.strongInCell, md.ol, md.h, md.quote, md.anchors], [2, 2, true, 2, true, true, 0]);
+      assert.match(md.text, /click \(javascript:alert\(1\)\)/, 'links are shown as text, never followed');
+      assert.match(md.text, /<script>alert\(2\)<\/script>/, 'raw HTML stays literal text');
+      const tok = await page.evaluate(async () => {
+        const { highlightLine } = await import('/render.js');
+        const d = document.createElement('div'); d.append(highlightLine('py', 'def f(x): return "a#b" + 42  # note'));
+        return [...d.querySelectorAll('span')].map((s) => `${s.className}:${s.textContent}`);
+      });
+      assert.deepEqual(tok, ['tok-kw:def', 'tok-kw:return', 'tok-str:"a#b"', 'tok-num:42', 'tok-com:# note']);
       assert.match(readFileSync(join(repo, 'mathx.py'), 'utf8'), /b \+ 1/);
     }
     await page.screenshot({ path: join(out, `final-${scheme}.png`), fullPage: true });

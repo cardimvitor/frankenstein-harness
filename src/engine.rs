@@ -222,6 +222,19 @@ impl TaskResult {
     }
 }
 
+/// Loads an interrupted session (the newest, or `id`) for `TaskOptions::resume`: returns (task text, state).
+pub fn load_resume(env: &Env, cwd: &Path, id: Option<&str>) -> Result<(String, ResumeState), String> {
+    let fp = fingerprint(cwd);
+    let s = crate::session::log::load(env, &fp.project_id, id).ok_or("no session to resume")?;
+    if let Some(v) = &s.verdict {
+        return Err(format!("session {} already finished: {v} ({})", s.id, s.reason));
+    }
+    let (Some(plan), Some(base)) = (s.plan.clone(), s.checkpoint.clone().filter(|c| !c.is_empty())) else {
+        return Err(format!("session {} was interrupted before planning finished; run the task again: {}", s.id, s.task));
+    };
+    Ok((s.task.clone(), ResumeState { session_id: s.id.clone(), plan, base, history: s.history.clone() }))
+}
+
 /// Scope for the diff-scope check: planned files, their directories, and test files.
 pub fn allowed_from_plan(plan: &[crate::funnel::intake::PlanStep], subtasks: &[Subtask]) -> Option<Vec<String>> {
     let files: Vec<String> = plan.iter().flat_map(|p| p.files.clone()).chain(subtasks.iter().flat_map(|s| s.files.clone())).map(|f| f.trim_start_matches("./").to_string()).filter(|f| !f.is_empty()).collect();

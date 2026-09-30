@@ -251,3 +251,109 @@ async fn tree_and_history_endpoints_need_auth_and_return_workspace_data() {
     let h: Value = serde_json::from_str(&http(p, Method::GET, "/api/history", &[("cookie", &cookie)], None).await.body).unwrap();
     assert!(h.is_array());
 }
+
+#[tokio::test]
+async fn render_module_is_served_and_free_of_markup_injection() {
+    let e = setup(Env::new()).await;
+    let r = http(e.srv.port, Method::GET, "/render.js", &[], None).await;
+    assert_eq!(r.status, 200);
+    assert!(r.headers["content-type"].to_str().unwrap().starts_with("text/javascript"));
+    assert!(!regex::Regex::new(r"\.(innerHTML|outerHTML)\s*[+]?=|insertAdjacentHTML|document\.write|eval\(|new Function|createElement\(.script.\)|\.href\s*=").unwrap().is_match(&r.body), "render.js must never inject markup or create links");
+}
+
+fn env_home(dir: &Path) -> Env {
+    let mut e = Env::new();
+    e.insert("FH_HOME".into(), dir.to_string_lossy().to_string());
+    e.insert("FH_API_KEY".into(), "super-secret-token-value-123".into());
+    e
+}
+
+#[tokio::test]
+async fn file_endpoint_serves_workspace_files_and_refuses_everything_else() {
+    let home = tempfile::tempdir().unwrap();
+    let e = setup(env_home(home.path())).await;
+    let p = e.srv.port;
+    std::fs::write(e.d.path().join("notes.txt"), "token is super-secret-token-value-123 ok\n").unwrap();
+    std::fs::write(e.d.path().join(".env"), "SECRET=1\n").unwrap();
+    std::fs::write(e.d.path().join("server.pem"), "-----BEGIN-----\n").unwrap();
+    std::fs::write(e.d.path().join("blob.bin"), [0u8, 1, 2, 3, 0]).unwrap();
+    std::fs::write(e.d.path().join("big.txt"), "x".repeat(300_000)).unwrap();
+    assert_eq!(http(p, Method::GET, "/api/file?path=mathx.py", &[], None).await.status, 401);
+    let (_, cookie) = login(p, &e.srv.code()).await;
+    let get = |path: String| {
+        let cookie = cookie.clone();
+        async move { http(p, Method::GET, &format!("/api/file?path={path}"), &[("cookie", &cookie)], None).await }
+    };
+    let ok = get("mathx.py".into()).await;
+    let v: Value = serde_json::from_str(&ok.body).unwrap();
+    assert!(ok.status == 200 && v["content"].as_str().unwrap().contains("def sum_range") && v["binary"] == false, "{}", ok.body);
+    let n: Value = serde_json::from_str(&get("notes.txt".into()).await.body).unwrap();
+    assert!(!n["content"].as_str().unwrap().contains("super-secret-token-value-123"), "secret must be redacted in served files");
+    for bad in ["../../etc/passwd", "%2e%2e/%2e%2e/etc/passwd", ".git/config", ".env", "server.pem", "/etc/passwd"] {
+        let r = get(bad.into()).await;
+        assert_eq!(r.status, 403, "{bad} should be refused: {} {}", r.status, r.body);
+    }
+    assert_eq!(get("nope.txt".into()).await.status, 404);
+    let b: Value = serde_json::from_str(&get("blob.bin".into()).await.body).unwrap();
+    assert_eq!((b["binary"].clone(), b.get("content").is_none()), (json!(true), true));
+    let big: Value = serde_json::from_str(&get("big.txt".into()).await.body).unwrap();
+    assert!(big["truncated"] == true && big["content"].as_str().unwrap().len() == 200_000 && big["size"] == 300_000);
+}
+
+#[tokio::test]
+async fn sessions_list_and_resume_endpoints() {
+    let home = tempfile::tempdir().unwrap();
+    let env = env_home(home.path());
+    let e = setup(env.clone()).await;
+    let p = e.srv.port;
+    let fp = fh::fingerprint::fingerprint(e.d.path());
+    // one finished session and one interrupted after planning
+    let done = fh::session::log::SessionLog::create(&env, &fp.project_id);
+    done.append(json!({"t": "start", "task": "old finished task", "auto": true}));
+    done.append(json!({"t": "result", "verdict": "pass", "reason": "passed in round 1"}));
+    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    let cut = fh::session::log::SessionLog::create(&env, &fp.project_id);
+    cut.append(json!({"t": "start", "task": "fix sum_range super-secret-token-value-123", "auto": true}));
+    let plan = json!({"trivial": true, "questions": [], "enriched": "fix sum_range", "acceptance": ["tests pass"], "plan": [{"step": "fix", "files": ["mathx.py"]}], "assumptions": [], "subtasks": []});
+    cut.append(json!({"t": "plan", "plan": plan}));
+    let base = fh::session::checkpoint::Checkpoints::new(e.d.path()).create("before").await.unwrap();
+    cut.append(json!({"t": "checkpoint", "id": base}));
+
+    assert_eq!(http(p, Method::GET, "/api/sessions", &[], None).await.status, 401);
+    let (_, cookie) = login(p, &e.srv.code()).await;
+    let list: Value = serde_json::from_str(&http(p, Method::GET, "/api/sessions", &[("cookie", &cookie)], None).await.body).unwrap();
+    let rows = list.as_array().unwrap();
+    assert_eq!(rows.len(), 2);
+    assert_eq!((rows[0]["resumable"].clone(), rows[0]["verdict"].clone()), (json!(true), Value::Null), "newest first: the interrupted one");
+    assert!(!rows[0]["task"].as_str().unwrap().contains("super-secret-token-value-123"));
+    assert_eq!(rows[1]["verdict"], "pass");
+
+    let mut h = J.to_vec();
+    h.push(("cookie", &cookie));
+    let r = http(p, Method::POST, "/api/resume", &h, Some(json!({"id": done.id}))).await;
+    assert_eq!(r.status, 400);
+    assert!(r.body.contains("already finished"), "{}", r.body);
+    assert_eq!(http(p, Method::POST, "/api/resume", &h, Some(json!({"id": "0000000000000"}))).await.status, 400);
+
+    // resuming the interrupted one runs the stored plan without a new planning request
+    e.m.set_fallback(|req| {
+        let props = &req["response_format"]["json_schema"]["schema"]["properties"];
+        assert!(props.get("trivial").is_none(), "resume must not re-plan");
+        if props.get("verdict").is_some() {
+            return Scripted::json(json!({"verdict": "pass", "findings": []}));
+        }
+        if req["messages"].as_array().unwrap().last().unwrap()["role"] == "tool" {
+            return Scripted::text("Fixed.");
+        }
+        Scripted::call("edit", json!({"path": "mathx.py", "old_text": "in range(a, b)", "new_text": "in range(a, b + 1)"}))
+    });
+    let listener = tokio::spawn({
+        let cookie = cookie.clone();
+        async move { sse(p, &cookie, |t, _| t == "result").await }
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    assert_eq!(http(p, Method::POST, "/api/resume", &h, Some(json!({"id": cut.id, "mode": "auto", "approval": "yolo"}))).await.status, 202);
+    let events = listener.await.unwrap();
+    assert_eq!(events.iter().find(|(t, _)| t == "result").expect("result").1["verdict"], "pass");
+    assert!(std::fs::read_to_string(e.d.path().join("mathx.py")).unwrap().contains("b + 1"));
+}

@@ -59,11 +59,17 @@
       <ul id="skills" class="list"><li class="muted">None yet</li></ul>
       <h2>Skill history</h2>
       <ul id="history" class="list"><li class="muted">None yet</li></ul>
+      <h2>Sessions</h2>
+      <ul id="sessions" class="list"><li class="muted">None yet</li></ul>
       <h2>Workspace</h2>
       <div id="tree" class="tree" role="tree" aria-label="Workspace files"></div>
     </aside>
   </div>
 </div>
+<dialog id="viewer" aria-labelledby="viewer-title">
+  <div class="viewer-head"><strong id="viewer-title"></strong><button type="button" id="viewer-close">Close</button></div>
+  <div id="viewer-body" class="viewer-body"></div>
+</dialog>
 <script src="/app.js" type="module"></script>
 </body>
 </html>

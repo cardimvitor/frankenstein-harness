@@ -29,6 +29,7 @@ pub const CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self'; 
 
 const INDEX: &str = include_str!("../../web/index.html");
 const APP_JS: &str = include_str!("../../web/app.js");
+const RENDER_JS: &str = include_str!("../../web/render.js");
 const STYLE: &str = include_str!("../../web/style.css");
 
 fn secret(n: usize) -> String {
@@ -185,6 +186,7 @@ struct App {
     busy: Mutex<Option<CancellationToken>>,
     last: Mutex<Option<String>>,
     allowed_hosts: HashSet<String>,
+    project_id: String,
     log: Option<Arc<dyn Fn(&str) + Send + Sync>>,
 }
 
@@ -336,6 +338,76 @@ async fn history(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
     Json(app.engine.store.history("").into_iter().map(|(name, v, hash, reason, diff)| json!({"skill": name, "version": v, "hash": hash, "reason": reason, "diff": diff.chars().take(2000).collect::<String>()})).collect::<Vec<_>>()).into_response()
 }
 
+const FILE_LIMIT: usize = 200_000;
+
+/// Files that are never served through the browser even inside the workspace.
+fn withheld(rel: &str) -> bool {
+    let l = rel.to_lowercase();
+    let name = l.rsplit('/').next().unwrap_or("");
+    l == ".git" || l.starts_with(".git/") || name == ".env" || name.starts_with(".env.") || name.ends_with(".pem") || name.ends_with(".key") || name.starts_with("id_rsa") || name.starts_with("id_ed25519") || name == ".netrc" || name == ".npmrc"
+}
+
+async fn file(State(app): State<Arc<App>>, headers: HeaderMap, axum::extract::Query(q): axum::extract::Query<HashMap<String, String>>) -> Response {
+    if !authed(&app, &headers) {
+        return err(StatusCode::UNAUTHORIZED, "not authenticated");
+    }
+    let Some(p) = q.get("path").filter(|p| !p.is_empty() && p.len() < 1024) else { return err(StatusCode::BAD_REQUEST, "path required") };
+    let cwd = &app.engine.cwd;
+    let Ok(abs) = crate::util::paths::in_workspace(cwd, p) else { return err(StatusCode::FORBIDDEN, "path escapes the workspace") };
+    let rel = crate::util::paths::rel(cwd, &abs);
+    if withheld(&rel) {
+        return err(StatusCode::FORBIDDEN, "this file is not served through the browser");
+    }
+    let Ok(bytes) = std::fs::read(&abs) else { return err(StatusCode::NOT_FOUND, "no such file") };
+    let head = &bytes[..bytes.len().min(8000)];
+    if head.contains(&0) {
+        return Json(json!({"path": rel, "binary": true, "size": bytes.len()})).into_response();
+    }
+    let truncated = bytes.len() > FILE_LIMIT;
+    let text = String::from_utf8_lossy(&bytes[..bytes.len().min(FILE_LIMIT)]).into_owned();
+    Json(json!({"path": rel, "binary": false, "size": bytes.len(), "truncated": truncated, "content": redact(&text, &app.engine.env)})).into_response()
+}
+
+async fn sessions(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
+    if !authed(&app, &headers) {
+        return err(StatusCode::UNAUTHORIZED, "not authenticated");
+    }
+    let rows = crate::session::log::list(&app.engine.env, &app.project_id);
+    Json(rows.into_iter().take(30).map(|s| json!({"id": s.id, "task": redact(&s.task.chars().take(200).collect::<String>(), &app.engine.env), "verdict": s.verdict, "reason": s.reason, "started": s.started, "resumable": s.verdict.is_none() && s.plan.is_some() && s.checkpoint.is_some()})).collect::<Vec<_>>()).into_response()
+}
+
+async fn resume(State(app): State<Arc<App>>, headers: HeaderMap, Json(b): Json<Value>) -> Response {
+    if !authed(&app, &headers) {
+        return err(StatusCode::UNAUTHORIZED, "not authenticated");
+    }
+    let (text, state) = match crate::engine::load_resume(&app.engine.env, &app.engine.cwd, b["id"].as_str()) {
+        Ok(x) => x,
+        Err(e) => return err(StatusCode::BAD_REQUEST, &e),
+    };
+    let token = {
+        let mut busy = app.busy.lock().unwrap();
+        if busy.is_some() {
+            return err(StatusCode::CONFLICT, "a task is already running");
+        }
+        let t = CancellationToken::new();
+        *busy = Some(t.clone());
+        t
+    };
+    let auto = b["mode"] == "auto";
+    let approval = b["approval"].as_str().and_then(Mode::parse).unwrap_or(Mode::AutoEdit);
+    app.hub.emit("busy", json!({"busy": true, "task": format!("resuming: {}", text.chars().take(160).collect::<String>())}));
+    let a2 = app.clone();
+    tokio::spawn(async move {
+        let r: TaskResult = a2.engine.run_task(&text, TaskOptions { auto, approval, cancel: Some(token), resume: Some(state), ..Default::default() }).await;
+        *a2.last.lock().unwrap() = Some(r.verdict.clone());
+        a2.hub.emit("result", r.to_json());
+        *a2.busy.lock().unwrap() = None;
+        a2.hub.emit("busy", json!({"busy": false}));
+        a2.engine.drain(20_000).await;
+    });
+    (StatusCode::ACCEPTED, Json(json!({"ok": true}))).into_response()
+}
+
 async fn task(State(app): State<Arc<App>>, headers: HeaderMap, Json(b): Json<Value>) -> Response {
     if !authed(&app, &headers) {
         return err(StatusCode::UNAUTHORIZED, "not authenticated");
@@ -410,6 +482,7 @@ pub async fn start_web_server(cfg: Config, env: Env, cwd: PathBuf, o: ServeOptio
         Some(s) => s,
         None => SkillStore::open(&env)?,
     };
+    let app_cwd = cwd.clone();
     let engine = Arc::new(Engine::new(cfg.clone(), env, Arc::new(WebIo { hub: hub.clone() }), cwd, store));
     let app = Arc::new(App {
         cfg,
@@ -420,12 +493,14 @@ pub async fn start_web_server(cfg: Config, env: Env, cwd: PathBuf, o: ServeOptio
         failures: Mutex::new(0),
         busy: Mutex::new(None),
         last: Mutex::new(None),
+        project_id: crate::fingerprint::fingerprint(&app_cwd).project_id,
         allowed_hosts: [format!("127.0.0.1:{port}"), format!("localhost:{port}")].into_iter().collect(),
         log: o.log,
     });
     let router = Router::new()
         .route("/", get(|| async { asset(INDEX, "text/html; charset=utf-8") }))
         .route("/app.js", get(|| async { asset(APP_JS, "text/javascript; charset=utf-8") }))
+        .route("/render.js", get(|| async { asset(RENDER_JS, "text/javascript; charset=utf-8") }))
         .route("/style.css", get(|| async { asset(STYLE, "text/css; charset=utf-8") }))
         .route("/api/auth", post(auth))
         .route("/api/events", get(events))
@@ -433,6 +508,9 @@ pub async fn start_web_server(cfg: Config, env: Env, cwd: PathBuf, o: ServeOptio
         .route("/api/activity", get(activity))
         .route("/api/tree", get(tree))
         .route("/api/history", get(history))
+        .route("/api/file", get(file))
+        .route("/api/sessions", get(sessions))
+        .route("/api/resume", post(resume))
         .route("/api/task", post(task))
         .route("/api/answer", post(answer))
         .route("/api/cancel", post(cancel))

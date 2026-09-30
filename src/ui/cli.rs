@@ -430,22 +430,16 @@ pub async fn main(argv: Vec<String>) -> i32 {
             }
         }
         "resume" => {
-            let fp = crate::fingerprint::fingerprint(&cwd);
-            let Some(s) = crate::session::log::load(&env, &fp.project_id, args.positional.first().map(|s| s.as_str())) else {
-                eprintln!("no session to resume (see `fh sessions`)");
-                return 1;
-            };
-            if let Some(v) = &s.verdict {
-                println!("session {} already finished: {v} ({})", s.id, s.reason);
-                return 0;
-            }
-            let (Some(plan), Some(base)) = (s.plan.clone(), s.checkpoint.clone().filter(|c| !c.is_empty())) else {
-                eprintln!("session {} was interrupted before planning finished; run the task again:\n  fh run {:?}", s.id, s.task);
-                return 1;
+            let (task, state) = match crate::engine::load_resume(&env, &cwd, args.positional.first().map(|s| s.as_str())) {
+                Ok(x) => x,
+                Err(e) => {
+                    eprintln!("{e}");
+                    return 1;
+                }
             };
             let mut o = opts(Some(cancel));
-            o.resume = Some(crate::engine::ResumeState { session_id: s.id.clone(), plan, base, history: s.history.clone() });
-            let r = engine.run_task(&s.task, o).await;
+            o.resume = Some(state);
+            let r = engine.run_task(&task, o).await;
             print_result(&r, args.has("json"));
             engine.drain(20_000).await;
             if matches!(r.verdict.as_str(), "pass" | "planned") { 0 } else if r.verdict == "unverified" { 3 } else { 1 }

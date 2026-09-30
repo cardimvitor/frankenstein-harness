@@ -1,38 +1,13 @@
 // No innerHTML anywhere: every piece of model/repo text is inserted with textContent (XSS from repo or model content
-// would otherwise run with shell access behind this UI).
+// would otherwise run with shell access behind this UI). Rendering helpers live in render.js.
+import { el, renderMarkdown, renderDiff, renderCode, parseDiff } from './render.js';
 const $ = (id) => document.getElementById(id);
-const el = (tag, cls, text) => { const n = document.createElement(tag); if (cls) n.className = cls; if (text !== undefined) n.textContent = text; return n; };
 const api = async (path, body) => {
   const res = await fetch(path, body === undefined ? { credentials: 'same-origin' } : {
     method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-fh': '1' }, body: JSON.stringify(body),
   });
   return { ok: res.ok, status: res.status, json: await res.json().catch(() => ({})) };
 };
-
-/** Minimal safe markdown: paragraphs, ``` fences, `code`, **bold**, - lists. No raw HTML, no links. */
-function renderMarkdown(text) {
-  const root = el('div');
-  const parts = text.split(/```[^\n]*\n?/);
-  parts.forEach((chunk, i) => {
-    if (i % 2 === 1) { root.append(el('pre', '', chunk.replace(/\n$/, ''))); return; }
-    for (const block of chunk.split(/\n{2,}/)) {
-      if (!block.trim()) continue;
-      const lines = block.split('\n');
-      if (lines.every((l) => /^\s*[-*]\s+/.test(l))) {
-        const ul = el('ul'); for (const l of lines) ul.append(inline(el('li'), l.replace(/^\s*[-*]\s+/, ''))); root.append(ul);
-      } else root.append(inline(el('p'), block));
-    }
-  });
-  return root;
-}
-function inline(node, text) {
-  for (const seg of text.split(/(`[^`]+`|\*\*[^*]+\*\*)/)) {
-    if (seg.startsWith('`') && seg.endsWith('`') && seg.length > 2) node.append(el('code', '', seg.slice(1, -1)));
-    else if (seg.startsWith('**') && seg.endsWith('**') && seg.length > 4) node.append(el('strong', '', seg.slice(2, -2)));
-    else node.append(document.createTextNode(seg));
-  }
-  return node;
-}
 
 let progressNode = null, reasoningNode = null, lastEventId = 0, running = false;
 const timeline = () => $('timeline');
@@ -41,7 +16,8 @@ const add = (node) => { timeline().append(node); scroll(); return node; };
 const li = (list, cls, text) => { const n = el('li', cls, text); list.append(n); return n; };
 const resetList = (id, empty) => { const l = $(id); l.replaceChildren(); if (empty) li(l, 'muted', empty); return l; };
 function setBusy(b, label) {
-  running = b; const s = $('status');
+  const was = running; running = b; const s = $('status');
+  if (was && !b) loadSessions();
   s.textContent = b ? (label || 'Working…') : 'Idle'; s.classList.toggle('busy', b);
   $('cancel').hidden = !b; $('send').disabled = b;
 }
@@ -113,7 +89,8 @@ const handlers = {
     card.append(renderMarkdown(r.final || r.reason || r.verdict));
     if (r.rejectedPatch) card.append(el('p', 'muted small', `Rejected patch saved: ${r.rejectedPatch}`));
     if (r.timings) card.append(el('p', 'muted small', `${(r.timings.totalMs / 1000).toFixed(1)}s · ${r.rounds} verification round(s) · ${r.llm?.completionTokens ?? 0} tokens out`));
-    if (r.diff) { const det = el('details'); det.append(el('summary', '', 'View diff'), el('pre', '', r.diff)); card.append(det); }
+    lastDiff = r.diff || '';
+    if (r.diff) { const det = el('details'); det.append(el('summary', '', 'View diff'), renderDiff(r.diff)); card.append(det); }
     add(card);
     changedSet = new Set(r.changed ?? []); loadSideData();
     const files = resetList('files', r.changed?.length ? '' : 'None');
@@ -132,14 +109,14 @@ function connect() {
   es.onerror = () => { es.close(); setTimeout(connect, 1500); };
 }
 
-let changedSet = new Set();
+let changedSet = new Set(), lastDiff = '';
 async function loadTree() {
   const r = await api('/api/tree'); if (!r.ok) return;
   const root = {}; 
   for (const f of r.json.files) { let n = root; const parts = f.split('/'); parts.slice(0, -1).forEach((p) => { n = n[p] = n[p] || {}; }); n[parts.at(-1)] = f; }
   const draw = (node, into) => {
     for (const [k, v] of Object.entries(node).sort(([a, x], [b, y]) => (typeof x === 'object') === (typeof y === 'object') ? a.localeCompare(b) : (typeof x === 'object' ? -1 : 1))) {
-      if (typeof v === 'string') { into.append(el('div', `file${changedSet.has(v) ? ' changed' : ''}`, k)); continue; }
+      if (typeof v === 'string') { const b = el('button', `file${changedSet.has(v) ? ' changed' : ''}`, k); b.type = 'button'; b.title = v; b.onclick = () => openFile(v); into.append(b); continue; }
       const d = el('details'); d.append(el('summary', '', k)); draw(v, d); into.append(d);
     }
   };
@@ -151,6 +128,31 @@ async function loadSideData() {
   const h = await api('/api/history');
   if (h.ok && h.json.length) { const l = resetList('history', ''); for (const x of h.json.slice(-12)) { const n = li(l, 'hist', `${x.skill} v${x.version} ${x.hash}\n${x.reason}`); } }
   await loadTree();
+  await loadSessions();
+}
+
+async function openFile(path) {
+  const r = await api(`/api/file?path=${encodeURIComponent(path)}`);
+  const dlg = $('viewer'), body = $('viewer-body');
+  $('viewer-title').textContent = path; body.replaceChildren();
+  if (!r.ok) body.append(el('p', 'error', r.json.error || 'Cannot open this file'));
+  else if (r.json.binary) body.append(el('p', 'muted', `Binary file (${r.json.size} bytes)`));
+  else {
+    if (lastDiff && parseDiff(lastDiff).some((f) => f.path === path)) { const d = el('details', 'viewer-changes'); d.open = true; d.append(el('summary', '', 'Changes from the last task'), renderDiff(lastDiff, path)); body.append(d); }
+    if (r.json.truncated) body.append(el('p', 'muted small', `Showing the first ${r.json.content.length} characters of ${r.json.size} bytes.`));
+    body.append(renderCode(path, r.json.content));
+  }
+  if (typeof dlg.showModal === 'function') dlg.showModal(); else dlg.setAttribute('open', '');
+}
+
+async function loadSessions() {
+  const r = await api('/api/sessions'); if (!r.ok) return;
+  const l = resetList('sessions', r.json.length ? '' : 'None yet');
+  for (const s of r.json.slice(0, 8)) {
+    const row = li(l, s.verdict === 'pass' ? 'ok' : s.verdict ? (s.verdict === 'unverified' ? 'skip' : 'fail') : 'skip', '');
+    row.append(el('span', '', `${s.verdict ?? 'interrupted'} · ${s.task}`));
+    if (s.resumable) { const b = el('button', 'small-btn', 'Resume'); b.type = 'button'; b.onclick = async () => { const x = await api('/api/resume', { id: s.id, mode: $('mode').value, approval: $('approval').value }); if (!x.ok) add(el('li', 'msg notice warn', x.json.error || 'Could not resume')); }; row.append(b); }
+  }
 }
 
 async function boot() {
@@ -177,4 +179,5 @@ $('composer').addEventListener('submit', async (e) => {
 });
 $('task').addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); $('composer').requestSubmit(); } });
 $('cancel').addEventListener('click', () => api('/api/cancel', {}));
+$('viewer-close').addEventListener('click', () => $('viewer').close());
 boot();
