@@ -1,4 +1,4 @@
-const STOP = new Set('a an the and or of to in on for with is are be this that it as at by from into can you your we our not do does did make add fix use using create update change should would could please'.split(' '));
+const STOP = new Set('a an the and or of to in on for with is are be this that it as at by from into can you your we our not do does did make add fix use using create update change should would could please so if then when how what all any more than but also need want get set new one two its their them they there here about after before over under out up down just like into onto per via'.split(' '));
 
 export function tokenize(text: string): string[] {
   return text

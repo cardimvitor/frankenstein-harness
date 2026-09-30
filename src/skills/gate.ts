@@ -15,7 +15,7 @@ export interface GateResult {
 
 const BOOST: Record<string, number> = { project: 1.3, stack: 1.15, global: 1.0 };
 const MAX_SELECTED = 3;
-const MIN_SCORE = 0.8;
+const MIN_SCORE = 1.5;
 const MIN_TASK_WORDS = 4;
 
 /**
@@ -27,7 +27,9 @@ export function gate(store: SkillStore, fp: Fingerprint, task: string, user: Use
   const t0 = performance.now();
   const pool = store.allForProject(fp);
   const bm = new Bm25(pool.map((s) => ({ id: s.id, text: `${s.name} ${s.summary} ${s.body}`, boost: `${s.name} ${s.keywords} ${s.stack ?? ''}` })));
-  const q = [...tokenize(task), ...fp.tokens.flatMap((t) => tokenize(t))];
+  // Query is the task text only: the fingerprint decides which skills APPLY (skillApplies) and gives stack packs their bonus below;
+  // feeding its tokens into the text query made unrelated personas match on incidental words.
+  const q = tokenize(task);
   const scores = bm.score(q);
   const ranked = pool.map((s) => {
     let sc = (scores.get(s.id) ?? 0) * BOOST[s.scope];
@@ -41,7 +43,7 @@ export function gate(store: SkillStore, fp: Fingerprint, task: string, user: Use
   let globals = 0;
   for (const { s, sc } of ranked) {
     if (selected.length >= MAX_SELECTED) break;
-    if (s.scope === 'global' && globals >= 1 && sc < ranked[0].sc * 0.8) continue;
+    if (s.scope === 'global' && globals >= 2 && sc < ranked[0].sc * 0.6) continue;
     if (s.scope === 'global') globals++;
     selected.push(s);
   }
