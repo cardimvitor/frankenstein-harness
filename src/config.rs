@@ -200,6 +200,9 @@ pub fn load_config(cwd: &Path, env: &Env) -> Result<Config> {
     if let Some(x) = env.get("FH_CONTEXT_WINDOW").and_then(|s| s.parse().ok()) {
         cfg.context_window = x;
     }
+    if let Some(x) = env.get("FH_MAX_CONCURRENCY").and_then(|s| s.parse().ok()) {
+        cfg.max_concurrency = x;
+    }
     cfg.endpoint = cfg.endpoint.trim_end_matches('/').to_string();
     if cfg.metrics_url.is_empty() {
         cfg.metrics_url = format!("{}/metrics", origin_of(&cfg.endpoint));

@@ -24,6 +24,7 @@ Usage:
   fh tui                      the same, explicitly
   fh run \"<task>\" [options]   run one task
   fh serve [--port N]         local web UI (127.0.0.1 only)
+  fh --version                print the version
   fh doctor                   check endpoint, model, auth, metrics, sandbox
   fh validate-vllm [options]  measure MTP, prefix cache, tool calls, long context, concurrency
   fh eval --tasks <dir> [options]   run the eval corpus (--runner fh|fh-single|qwen|both|all|orch)
@@ -54,7 +55,7 @@ Options for run/chat:
   --thinking        show model reasoning (plain mode; in the TUI press Ctrl+T)
   --plain           line-based chat instead of the full-screen UI
 
-Environment: FH_ENDPOINT, FH_MODEL, FH_API_KEY (or the variable named by FH_API_KEY_ENV), FH_AUTH_SCHEME, FH_METRICS_URL, FH_HOME";
+Environment: FH_ENDPOINT, FH_MODEL, FH_API_KEY (or the variable named by FH_API_KEY_ENV), FH_AUTH_SCHEME, FH_METRICS_URL, FH_CONTEXT_WINDOW, FH_MAX_CONCURRENCY, FH_HOME";
 
 pub struct Args {
     pub cmd: String,
@@ -168,6 +169,10 @@ pub async fn main(argv: Vec<String>) -> i32 {
     let args = parse_args(&argv);
     if args.has("help") || args.cmd == "help" {
         println!("{HELP}");
+        return 0;
+    }
+    if args.has("version") || args.cmd == "version" || argv.first().map(|a| a == "-V").unwrap_or(false) {
+        println!("fh {}", env!("CARGO_PKG_VERSION"));
         return 0;
     }
     let cwd = PathBuf::from(args.get("cwd").map(|s| s.to_string()).unwrap_or_else(|| std::env::current_dir().map(|p| p.to_string_lossy().to_string()).unwrap_or_else(|_| ".".into())));

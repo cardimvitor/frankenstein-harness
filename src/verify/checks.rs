@@ -97,12 +97,25 @@ pub fn parse_diff_added(diff: &str) -> Vec<AddedLine> {
     out
 }
 
+/// Exit 5 with the runner's own "nothing collected" message (pytest, unittest on Python 3.12+).
+pub fn no_tests_found(code: Option<i32>, stdout: &str, stderr: &str) -> bool {
+    if code != Some(5) {
+        return false;
+    }
+    let out = format!("{stdout}\n{stderr}");
+    out.contains("NO TESTS RAN") || out.contains("no tests ran") || out.contains("collected 0 items")
+}
+
 pub async fn run_commands(cwd: &Path, cmds: &[VerifyCmd], cancel: Option<CancellationToken>, timeout: Duration) -> Vec<CheckResult> {
     let exec = |c: VerifyCmd| {
         let cancel = cancel.clone();
         async move {
             let r = run(&c.cmd, cwd, RunOpts { timeout: Some(timeout), cancel, ..Default::default() }).await;
             let ok = r.code == Some(0) && !r.timed_out;
+            if c.kind == VerifyKind::Test && no_tests_found(r.code, &r.stdout, &r.stderr) {
+                // unittest (3.12+) and pytest exit 5 when there is nothing to run: not a failure of the change
+                return CheckResult { name: c.name.clone(), kind: c.kind.into(), status: Status::Skipped, ms: r.ms, detail: "no tests found (exit 5)".into() };
+            }
             CheckResult {
                 name: c.name.clone(),
                 kind: c.kind.into(),

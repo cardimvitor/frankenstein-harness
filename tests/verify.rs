@@ -3,7 +3,7 @@ use fh::fingerprint::{fingerprint, similarity};
 use fh::llm::client::LlmClient;
 use fh::session::checkpoint::Checkpoints;
 use fh::testkit::{self, Scripted};
-use fh::verify::checks::{diff_checks, parse_diff_added, Status};
+use fh::verify::checks::{diff_checks, no_tests_found, parse_diff_added, Status};
 use fh::verify::reviewer::validate_findings;
 use fh::verify::rounds::{verify_loop, Verdict, VerifyCtx};
 use fh::verify::secrets::find_secrets;
@@ -181,4 +181,12 @@ async fn reviewer_blocker_with_valid_citation_forces_a_fix_round() {
     assert_eq!(rep.verdict, Verdict::Pass);
     assert_eq!((rep.reviewer.dropped, rep.reviewer.valid), (1, 1));
     assert_eq!(m.requests()[0]["response_format"]["type"], "json_schema");
+}
+
+#[test]
+fn exit_5_without_tests_is_not_a_failure() {
+    assert!(no_tests_found(Some(5), "ok\n\nRan 0 tests in 0.000s\n\nNO TESTS RAN\n", ""));
+    assert!(no_tests_found(Some(5), "collected 0 items\n", ""));
+    assert!(!no_tests_found(Some(1), "NO TESTS RAN", ""));
+    assert!(!no_tests_found(Some(5), "error: something else", ""));
 }
