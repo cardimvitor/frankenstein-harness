@@ -7,10 +7,11 @@ Esta versão substitui a primeira (`docs/VALIDACAO_JG_ENG_TESTS.md`) e incorpora
 ## Decisões do dono do projeto (valem acima de qualquer outra regra deste documento)
 1. **Só vale o resultado final.** Se o `fh` errou duas vezes e acertou na terceira, antes de entregar, conta como certo, sem penalidade. Tentativas intermediárias, rodadas de verificação e autocorreções são o processo interno do harness e não entram na nota nem no relatório como erro. Corrija o que ele deixar no disco ao terminar, sem `--keep`. Se ele desfizer a própria mudança, a entrega é o estado original. O mesmo vale para todos os harnesses.
 2. **O `fh` pode aprender entre exercícios.** A memória de skills é parte do harness e está sendo validada junto. O estado dele persiste de um exercício para o outro dentro do mesmo modo, e qualquer outro harness com memória persistente nativa recebe o mesmo tratamento.
-3. **Resolver antes de rodar e verificar.** Tudo que pode quebrar por ambiente ou configuração é resolvido e verificado antes da execução que conta. A falha de verificação do `fh` que a primeira versão apontava (não conhecer `scripts/test.sh`) já foi corrigida no próprio `fh` (seção 5.5).
+3. **Resolver antes de rodar e verificar.** Tudo que pode quebrar por ambiente ou configuração é resolvido e verificado antes da execução que conta. A falha de verificação do `fh` que a primeira versão apontava (não conhecer `scripts/test.sh`) já foi corrigida no próprio `fh` (seção 5.1).
 4. **Concorrência na primeira rodada.** Nada de ir direto a 20. Sobe até 5 exercícios em paralelo. Depois valida, degrau a degrau, se chega a 10 sem prejudicar o desempenho, e só sobe um degrau depois de confirmar que o anterior aguentou.
-5. **Teste final de capacidade, só do `fh`.** Ao final de tudo, começa com 20 sessões simultâneas e vai aumentando até onde o servidor aguenta. Mede o tok/s de cada atividade para calcular o tok/s médio por usuário e descobre a capacidade máxima em uso extremo, com outras técnicas de carga além da carga real (seção 8).
+5. **Teste final de capacidade, só do `fh`.** Ao final de tudo, começa com 20 sessões simultâneas e vai aumentando até onde o servidor aguenta. Mede o tok/s de cada atividade para calcular o tok/s médio por usuário e descobre a capacidade máxima em uso extremo, com outras técnicas de carga além da carga real (seção 9).
 6. **Quem julga a assertividade final é a LLM que conduz os testes, não o Qwen.** O juiz é você, a LLM operadora que está executando este prompt. O Frankenstein V2 (Qwen) aparece só como o modelo avaliado, dentro dos harnesses. Nada do que ele diz sobre o próprio trabalho entra na nota: nem o veredito interno do `fh`, nem o revisor LLM do `fh`, nem o "terminei, todos os testes passam" de qualquer harness. Esses sinais não entram no relatório como métrica. Detalhes na seção 5.0b.
+7. **O `fh` vem sempre primeiro, nas duas versões.** Em cada comparação (jg-eng-tests e cada benchmark público), a ordem é: `fh` modo 1 agente, `fh` modo máximo, e só depois os outros harnesses. Os benchmarks públicos (seção 8) rodam para todos os harnesses, como o jg-eng-tests, com tarefas em paralelo.
 
 Nomes usados aqui: **Frankenstein V2** é o modelo (Qwen3.8-27B NVFP4 + MTP=3 no vLLM). **Frankenstein Harness** (`fh`) é o nosso harness. Não confunda os dois no relatório.
 
@@ -23,9 +24,9 @@ Nomes usados aqui: **Frankenstein V2** é o modelo (Qwen3.8-27B NVFP4 + MTP=3 no
 - TIMEOUT_POR_EXERCICIO: 900 s de parede, contando do início do harness até o processo terminar
 - REPETICOES: 1 (3 se houver tempo, só para os 2 melhores harnesses)
 - AMOSTRAGEM: temperatura 1,0, top_p 0,95, top_k 20, igual para todos e imposta pelo proxy (seção 2)
-- EXECUTAR_ATE: fase `<0 a 7>` (a 7 é o teste de capacidade do `fh`)
+- EXECUTAR_ATE: fase `<0 a 8>` (a 7 são os benchmarks públicos; a 8, o teste de capacidade do `fh`, sempre por último)
 
-Estimativa de tempo, para planejar: com N_MAX = 10, o pior caso (todos os exercícios estourando o timeout) fica em ~3,5 h por harness, ou ~21 h para as 6 execuções, mais a calibração (~2 h) e o teste de capacidade (~4–8 h). O normal fica bem abaixo disso. A sessão precisa conseguir retomar sem refazer o que já terminou (seção 4.0).
+Estimativa de tempo, para planejar: com N_MAX = 10, o pior caso (todos os exercícios estourando o timeout) fica em ~3,5 h por harness, ou ~21 h para as 6 execuções, mais a calibração (~2 h) e o teste de capacidade (~4–8 h). Os benchmarks públicos (fase 7) são bem mais longos (tarefas de 8 h no Terminal-Bench, até 20 h no FrontierSWE): planeje dias, use um subconjunto fixo se precisar e retome pelo `state.json`. O normal fica bem abaixo disso. A sessão precisa conseguir retomar sem refazer o que já terminou (seção 4.0).
 
 ## 0. Regras que valem a sessão inteira
 1. Os agentes avaliados só veem a pasta `exercise/` de cada desafio. Nunca `solution/`, `grader/`, `EVALUATION.md`, o `.git` do jg-eng-tests, as pastas de outros exercícios ou resultados de outros harnesses. A única exceção é a memória interna do próprio harness (decisão 2): o que ele aprendeu sozinho nos exercícios anteriores, nunca a nota do grader. Você (operador) nunca resolve exercício, nunca dá dica e nunca cola conteúdo do grader em prompt.
@@ -91,11 +92,11 @@ Base: Qwen3.8-27B em NVFP4 (checkpoint `nvidia/Qwen3.8-27B-NVFP4`, revisão `dbb
       --host 127.0.0.1 --port 8000
 
 Notas:
-- `max-model-len`: 131072 se couber na GPU; mínimo 65536. Na rodada anterior, 32768 estourou num exercício, e Claude Code e OpenCode têm prompt de sistema grande. Registre o valor usado e use o mesmo valor em `FH_CONTEXT_WINDOW` (seção 5.5).
+- `max-model-len`: 131072 se couber na GPU; mínimo 65536. Na rodada anterior, 32768 estourou num exercício, e Claude Code e OpenCode têm prompt de sistema grande. Registre o valor usado e use o mesmo valor em `FH_CONTEXT_WINDOW` (seção 5.1).
 - Se o servidor travar ao iniciar com MTP no Blackwell (SM120), aplique a correção que resolveu antes: `--quantization modelopt_fp4 --block-size 128` com `VLLM_HAS_FLASHINFER_CUBIN=1`. Registre qual foi usado.
 - Confira cada flag com `vllm serve --help` da versão instalada; não use sintaxe de memória. Se `--override-generation-config` não existir, use o equivalente da versão e registre. De qualquer forma, o proxy impõe a amostragem (seção 3), porque os harnesses mandam os próprios valores por requisição e o padrão do servidor não os sobrescreve.
 - `max-num-seqs`: 16 foi validado na PRO 5000, mas com até 10 exercícios em paralelo (e o modo máximo do `fh` abrindo vários workers por exercício), 16 vira fila na hora. Suba para 64 na PRO 6000 de 96 GB. Na calibração (seção 5.0a), confira no `/metrics` se o uso de KV cache passa de 95% ou se há preempções. Se passar, reduza para 48 ou 32 e registre. Uma vez escolhido, o valor é fixo para todos os harnesses.
-- Com MTP, o ganho da especulação cai quando o lote cresce: a GPU deixa de estar ociosa entre tokens. É por isso que a rampa mede tok/s e aceitação a cada degrau. Se a calibração mostrar que acima de certo N o MTP piora o agregado, registre como achado. Não desligue o MTP na comparação principal; isso é testado como variante na fase 7.
+- Com MTP, o ganho da especulação cai quando o lote cresce: a GPU deixa de estar ociosa entre tokens. É por isso que a rampa mede tok/s e aceitação a cada degrau. Se a calibração mostrar que acima de certo N o MTP piora o agregado, registre como achado. Não desligue o MTP na comparação principal; isso é testado como variante na fase 8.
 - Reinício "limpo" = matar o processo, esperar a VRAM voltar ao repouso no `nvidia-smi`, subir de novo e esperar `GET /v1/models` responder. O cache de prefixo morre com o processo; não é preciso mais nada.
 - Teste de fumaça, a cada reinício e antes de cada harness:
   1. Uma chamada simples.
@@ -146,7 +147,7 @@ Teste o proxy antes da fase 4:
    - `git init`, seguido de um commit único "base" (autor fixo). O `fh` precisa de um repositório git para checkpoints e diffs, e os outros harnesses também usam `git status`/`git diff`. Esse `.git` novo contém só o conteúdo do exercício; o `.git` do jg-eng-tests nunca é copiado.
    - `scripts/setup.sh`, **com rede** e **antes** de o agente começar (`npm ci` / `dotnet restore`), para que o agente rode sem rede. Use um cache de NuGet/npm por harness montado em modo leitura depois do setup. Se o setup falhar, é erro de infraestrutura daquele exercício, não do harness.
 2. Verificação por script, que bloqueia a fase se falhar. Nenhuma cópia pode conter `solution/`, `grader/`, `EVALUATION.md`, nenhum arquivo cujo hash coincida com um arquivo de `solution/` ou `grader/` que não exista também em `exercise/`, e nenhum `.git` com mais de um commit. Guarde a saída.
-3. Cada exercício roda em contêiner próprio e descartável, com a cópia montada em `/work`, que também é o diretório de trabalho. Nada mais do disco do host fica montado, fora o cache de pacotes (só leitura), a configuração do harness (só leitura) e o diretório de memória persistente do harness (decisão 2; seção 5.5 para o `fh`). Assim, "só pode ler e escrever dentro da sua pasta" vale para qualquer harness, inclusive para comandos de shell. Cada exercício é uma sessão nova, com a conversa isolada; só a memória que o próprio harness mantém passa de um exercício para o outro.
+3. Cada exercício roda em contêiner próprio e descartável, com a cópia montada em `/work`, que também é o diretório de trabalho. Nada mais do disco do host fica montado, fora o cache de pacotes (só leitura), a configuração do harness (só leitura) e o diretório de memória persistente do harness (decisão 2; seção 5.1 para o `fh`). Assim, "só pode ler e escrever dentro da sua pasta" vale para qualquer harness, inclusive para comandos de shell. Cada exercício é uma sessão nova, com a conversa isolada; só a memória que o próprio harness mantém passa de um exercício para o outro.
 4. Os graders ficam em `WORKDIR/src/jg-eng-tests`, fora de qualquer montagem dos agentes.
 
 Prompt de tarefa, idêntico para todos:
@@ -188,7 +189,7 @@ A revisão é **cega**: um script do operador renomeia as entregas para códigos
 **Só o resultado final conta (decisão 1).** O que o harness diz sobre si, as tentativas intermediárias e quantas rodadas ele precisou não entram no julgamento nem no relatório como acerto ou erro. Quem errou duas vezes e acertou na terceira está certo. Tempo e tokens gastos continuam sendo medidos como custo (seção 6).
 
 ### 5.0a Paralelização entre exercícios: rampa gradual até 10
-O objetivo é terminar o conjunto mais rápido, com vários exercícios ao mesmo tempo, sem estragar nem o desempenho nem a comparação. Nesta rodada o teto é 10; o uso extremo fica para a fase 7.
+O objetivo é terminar o conjunto mais rápido, com vários exercícios ao mesmo tempo, sem estragar nem o desempenho nem a comparação. Nesta rodada o teto é 10; o uso extremo fica para a fase 8.
 
 **1. Calibração (uma vez, antes do primeiro harness, fora da comparação).**
 - Servidor recém-iniciado, com o `fh` no modo 1 agente e os primeiros 60 exercícios do catálogo. Essas execuções não contam, e a memória do `fh` usada aqui é descartada.
@@ -228,23 +229,9 @@ O objetivo é terminar o conjunto mais rápido, com vários exercícios ao mesmo
 - O timeout continua 900 s de parede em todos os degraus. Reporte a taxa de timeout por degrau.
 - O modo máximo do `fh` soma workers aos exercícios em paralelo: com N_MAX exercícios pode haver bem mais requisições simultâneas. Não reduza o N desse modo; a disputa pela GPU é o custo do fan-out e aparece como fila no relatório.
 
-### 5.1 OpenCode
-Provedor OpenAI-compatível (`@ai-sdk/openai-compatible`) apontando para `http://<proxy>:8001/v1`, modelo `frankenstein-v2`, com a chave do exercício. Confira a sintaxe de provedor customizado e do modo não interativo (`opencode run`) na documentação da versão instalada. Use as mesmas permissões da rodada anterior: bash restrito a `scripts/test.sh`, `lint.sh`, `setup.sh`, `git status`/`git diff` e `pwd`; sem web, sem subagentes, sem skills. Desligue compartilhamento e atualização automática. Registre a configuração exata (sem a chave).
+**Ordem de execução (decisão 7): o `fh` sempre primeiro.** 1) `fh` modo 1 agente; 2) `fh` modo máximo; 3) OpenCode; 4) Qwen Code; 5) Claude Code; 6) DeepSeek Harness. Cada um com servidor recém-iniciado.
 
-### 5.2 DeepSeek Harness
-Localize o repositório oficial e verifique se aceita endpoint OpenAI-compatível customizado e tool calling com este modelo. Se não aceitar, marque UNSUPPORTED com a evidência (trecho de código ou documentação, versão) e siga. Se aceitar, use modo não interativo, com as mesmas permissões e sem web.
-
-### 5.3 Qwen Code
-Via `OPENAI_BASE_URL=http://<proxy>:8001/v1`, `OPENAI_API_KEY=<chave do exercício>` e `OPENAI_MODEL=frankenstein-v2`, em modo não interativo (`qwen -p "<prompt>"`, com aprovação automática de ferramentas: confira a flag na versão instalada). Sem web, sem MCP, telemetria desligada.
-
-### 5.4 Claude Code
-- **Endpoint.** Precisa de endpoint no formato da API da Anthropic. Verifique se o vLLM instalado expõe `/v1/messages`. Se não expuser, use um tradutor, por exemplo LiteLLM com rota `/v1/messages` → provedor `hosted_vllm` apontando para o proxy. A cadeia fica Claude Code → LiteLLM → proxy → vLLM, e o proxy continua sendo o ponto de medição. Registre a versão do LiteLLM.
-- **Modelos.** Configure `ANTHROPIC_BASE_URL` para ele e aponte todos os slots de modelo para `frankenstein-v2`: `ANTHROPIC_MODEL`, `ANTHROPIC_DEFAULT_OPUS_MODEL`, `ANTHROPIC_DEFAULT_SONNET_MODEL`, `ANTHROPIC_DEFAULT_HAIKU_MODEL`, `CLAUDE_CODE_SUBAGENT_MODEL` e o slot "rápido" da versão instalada. Use a chave do exercício em `ANTHROPIC_AUTH_TOKEN` ou `ANTHROPIC_API_KEY`, conforme a versão.
-- **Tráfego externo.** Defina `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` e `DISABLE_TELEMETRY=1`.
-- **Execução.** Não interativo: `claude -p "<prompt>" --output-format json`, com permissões equivalentes às do OpenCode via `--allowedTools`/`--permission-mode`. Confira as flags com `claude --help`.
-- **Prova.** Confirme no log do proxy e no firewall que nenhuma chamada saiu para a Anthropic.
-
-### 5.5 Frankenstein Harness, modo 1 agente
+### 5.1 Frankenstein Harness, modo 1 agente (primeiro)
 Configuração por modo num diretório só de leitura, `WORKDIR/fh-config/<modo>/config.json`, passado com `FH_CONFIG_HOME`:
 
 ```json
@@ -289,7 +276,7 @@ Pontos obrigatórios:
 - **Verificação com os scripts do exercício (decisão 3, já corrigido no `fh`).** Quando o repositório tem `scripts/test.sh`, o `fh` verifica com os scripts que o próprio repositório declara (`scripts/build.sh`, `typecheck.sh`, `lint.sh`, `test.sh`, na ordem, com `bash`), em vez de inferir `dotnet test` ou `npm test`. No jg-eng-tests isso dá `bash scripts/lint.sh` e `bash scripts/test.sh`. Confirme nos pilotos (fase 0, item 6). Se ainda aparecer comando inferido, pare e corrija antes da execução que conta.
 - Guarde o JSON de `--json` como dado bruto (não entra na nota): rodadas de verificação, checks executados, workers, tokens, tool calls, chamadas reparadas ou malformadas, skills usadas (`skillsUsed`), aceitação do MTP.
 
-### 5.6 Frankenstein Harness, modo máximo de agentes
+### 5.2 Frankenstein Harness, modo máximo de agentes (segundo)
 Mesmo comando, com `maxConcurrency: 16` (o teto de workers por exercício, independente do `max-num-seqs`). Isso não força 16 agentes. É o teto: o planejador divide a tarefa em até 16 subtarefas com arquivos disjuntos, só quando elas são independentes. O regulador começa com 2 simultâneos e sobe conforme o `/metrics`. Também podem surgir workers "extra" para arquivos que ninguém possuía e um corretor por diretório em rodadas de reparo. Todos ficam restritos à pasta, pelo contêiner.
 
 Registre por exercício:
@@ -299,6 +286,22 @@ Registre por exercício:
 - tempo em fila no servidor (`num_requests_waiting` e o histograma de fila no intervalo do exercício).
 
 Com `max-num-seqs` fixo, esse modo pode saturar; isso é resultado, não erro. Registre também em quantos exercícios o planejador não dividiu nada, porque nesses exercícios os dois modos são equivalentes.
+
+### 5.3 OpenCode
+Provedor OpenAI-compatível (`@ai-sdk/openai-compatible`) apontando para `http://<proxy>:8001/v1`, modelo `frankenstein-v2`, com a chave do exercício. Confira a sintaxe de provedor customizado e do modo não interativo (`opencode run`) na documentação da versão instalada. Use as mesmas permissões da rodada anterior: bash restrito a `scripts/test.sh`, `lint.sh`, `setup.sh`, `git status`/`git diff` e `pwd`; sem web, sem subagentes, sem skills. Desligue compartilhamento e atualização automática. Registre a configuração exata (sem a chave).
+
+### 5.4 Qwen Code
+Via `OPENAI_BASE_URL=http://<proxy>:8001/v1`, `OPENAI_API_KEY=<chave do exercício>` e `OPENAI_MODEL=frankenstein-v2`, em modo não interativo (`qwen -p "<prompt>"`, com aprovação automática de ferramentas: confira a flag na versão instalada). Sem web, sem MCP, telemetria desligada.
+
+### 5.5 Claude Code
+- **Endpoint.** Precisa de endpoint no formato da API da Anthropic. Verifique se o vLLM instalado expõe `/v1/messages`. Se não expuser, use um tradutor, por exemplo LiteLLM com rota `/v1/messages` → provedor `hosted_vllm` apontando para o proxy. A cadeia fica Claude Code → LiteLLM → proxy → vLLM, e o proxy continua sendo o ponto de medição. Registre a versão do LiteLLM.
+- **Modelos.** Configure `ANTHROPIC_BASE_URL` para ele e aponte todos os slots de modelo para `frankenstein-v2`: `ANTHROPIC_MODEL`, `ANTHROPIC_DEFAULT_OPUS_MODEL`, `ANTHROPIC_DEFAULT_SONNET_MODEL`, `ANTHROPIC_DEFAULT_HAIKU_MODEL`, `CLAUDE_CODE_SUBAGENT_MODEL` e o slot "rápido" da versão instalada. Use a chave do exercício em `ANTHROPIC_AUTH_TOKEN` ou `ANTHROPIC_API_KEY`, conforme a versão.
+- **Tráfego externo.** Defina `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` e `DISABLE_TELEMETRY=1`.
+- **Execução.** Não interativo: `claude -p "<prompt>" --output-format json`, com permissões equivalentes às do OpenCode via `--allowedTools`/`--permission-mode`. Confira as flags com `claude --help`.
+- **Prova.** Confirme no log do proxy e no firewall que nenhuma chamada saiu para a Anthropic.
+
+### 5.6 DeepSeek Harness
+Localize o repositório oficial e verifique se aceita endpoint OpenAI-compatível customizado e tool calling com este modelo. Se não aceitar, marque UNSUPPORTED com a evidência (trecho de código ou documentação, versão) e siga. Se aceitar, use modo não interativo, com as mesmas permissões e sem web.
 
 ## 6. Fase 5: o que medir (por exercício e agregado por harness)
 - **Qualidade:**
@@ -366,7 +369,7 @@ Feita pela LLM operadora, nunca pelo Qwen. Só o operador lê os graders, e só 
 Use também o sinal empírico: critérios que nenhum harness passou e critérios que falham só por formato. Termine com uma classificação (claro, ambíguo, defeituoso) e sugestões de correção por exercício.
 
 ### Entregáveis em `WORKDIR/relatorio/`
-1. `relatorio.md` e `relatorio.txt` com toda a análise e todos os números. Primeira seção: resumo de uma página com o ranking, a comparação 1 agente × máximo, N_MAX, a capacidade máxima medida na fase 7 e a lista de NOT_RUN/UNSUPPORTED.
+1. `relatorio.md` e `relatorio.txt` com toda a análise e todos os números. Primeira seção: resumo de uma página com o ranking, a comparação 1 agente × máximo, N_MAX, os resultados dos benchmarks públicos (fase 7), a capacidade máxima medida na fase 8 e a lista de NOT_RUN/UNSUPPORTED.
 2. `relatorio.pdf` com tabelas e gráficos: ranking com intervalos, tokens, tempo e velocidade por harness, aprovação por trilha/stack/nível, tok/s por fluxo e agregado contra o número de exercícios em paralelo (calibração e cada harness), e 1 agente × máximo.
 3. `results.csv` e `results.json` por exercício e harness, os logs do proxy, do `/metrics` e do `nvidia-smi`, e os JSONs do grader.
 4. `MANIFEST.json`:
@@ -374,11 +377,110 @@ Use também o sinal empírico: critérios que nenhum harness passou e critérios
    - versões (vLLM, CUDA, driver, cada harness, LiteLLM se usado, .NET, Node, pwsh, language servers, digest da imagem);
    - o comando exato do servidor e as flags de fallback usadas;
    - amostragem imposta, `max-model-len`, `max-num-seqs` final, N_MAX e a escala de rampa usada;
-   - as variantes de servidor da fase 7, cada uma com o comando exato;
+   - as variantes de servidor da fase 8, cada uma com o comando exato;
+   - para cada benchmark público: versão/commit do conjunto de tarefas, versão do Harbor/Pier, lista exata de tarefas rodadas e o motivo de cada tarefa não rodada;
    - método de identificação por harness, regra de firewall;
    - horários de início e fim de cada fase e de cada harness.
 
-## 8. Fase 7: teste de capacidade do `fh` em uso extremo (depois de tudo)
+## 8. Fase 7: benchmarks públicos (todos os harnesses, `fh` primeiro)
+Objetivo: rodar cinco benchmarks públicos de código com todos os harnesses, como no jg-eng-tests, para comparar com o resto do mercado. Valem as mesmas regras: decisões 1, 2, 6 e 7, proxy de medição, amostragem imposta, servidor recém-iniciado por harness, rede bloqueada fora do endpoint. Nada desta fase roda antes de as fases 0 a 6 terminarem.
+
+| Benchmark | Tarefas | Runner | Onde estão as tarefas | Observação |
+|---|---|---|---|---|
+| Terminal-Bench 4.0 | 66 | Harbor | Harbor Hub (`harbor datasets list`; nome provável `terminal-bench@4.0`) | timeout fixo de 8 h por tarefa |
+| DeepSWE v1.1 | 113 | Pier (fork do Harbor da Datacurve) | `github.com/datacurve-ai/deep-swe` (`tasks/`) | sem internet; nota pelo que for **commitado** (`git diff base..HEAD`) |
+| CWE-bench v1 | 120 (privadas) | Harbor | conjunto avaliado é privado (Collinear e Artificial Analysis); ver `cwe-bench.com` | juízes são modelos de fronteira, nunca o Qwen |
+| Vibe Code Bench | 50 públicas (validação) | scaffold próprio (OpenHands) + avaliador com agente de navegador | `github.com/vals-ai/VibeCodeBench-Openhands-Scaffold` | o `fh` precisa de um adaptador próprio (8.5) |
+| FrontierSWE v2 | 34 | px-eval sobre o Harbor | `github.com/Proximal-Labs/frontier-swe-v2` | até 20 h por tarefa, várias exigem GPU |
+
+### 8.0 Mecânica comum
+- **Ordem (decisão 7).** Em cada benchmark: `fh` modo 1 agente, `fh` modo máximo, OpenCode, Qwen Code, Claude Code, DeepSeek Harness. Entre benchmarks: Terminal-Bench 4.0, DeepSWE v1.1, CWE-bench v1, Vibe Code Bench, FrontierSWE v2 (o mais longo por último).
+- **Mesmo conjunto de tarefas para todos.** Rode o benchmark inteiro. Se o tempo não der para todos os harnesses, escolha um subconjunto fixo com semente registrada (`--n-tasks N --sample-seed 0` no Pier, `-i/-x` ou `-l` no Harbor), decidido **antes** do primeiro harness. Todos os harnesses rodam exatamente esse subconjunto.
+- **Paralelismo.** Tarefas em paralelo com `-n` do Harbor/Pier. A rampa é a mesma do jg-eng-tests: começa em 2, sobe até 5 e só passa disso até N_MAX (fase 4) se os critérios da seção 5.0a continuarem valendo. Tarefas longas consomem CPU e memória do host por horas: respeite `cpus`/`memory_mb` de cada `task.toml` e reduza `-n` antes de reduzir recursos de tarefa. Registre o `-n` usado.
+- **Timeouts.** Use os timeouts oficiais de cada benchmark, sem multiplicadores. Se for preciso encurtar, isso vira variante com nome próprio, fora da comparação.
+- **Piloto.** Antes de cada harness em cada benchmark, rode 2 tarefas fora da contagem para validar a ligação: o agente instalou, falou com o proxy usando a chave certa, o verificador rodou e gravou a nota.
+- **Nota.** Vale a nota do verificador oficial de cada benchmark, sobre a entrega final (decisão 1). Para o CWE-bench e o Vibe Code Bench, os juízes oficiais são modelos externos: registre quais. Eles nunca são o Qwen nem um harness avaliado (decisão 6). Faça também uma revisão às cegas, pela LLM operadora, de 10% das tarefas aprovadas de cada harness, procurando trapaça (teste alterado, resposta fixa). Uma aprovação derrubada é reportada à parte; ela não muda a nota oficial.
+- **Memória do `fh` (decisão 2).** Um diretório de skills por benchmark e por modo, vazio no início, passado com `--ak state_dir=...`. O adaptador copia a memória para cada tarefa e a funde de volta ao final, com trava, mesmo com tarefas em paralelo.
+- **Medição.** Tudo passa pelo proxy (seção 3): tokens, TTFT, tok/s, aceitação do MTP, GPU. Some a isso o resultado do Harbor/Pier (`result.json` de cada job).
+
+### 8.1 Como o `fh` entra nos benchmarks (adaptadores do repositório)
+O repositório já traz os adaptadores em `integrations/harbor/fh_harbor/`, documentados em `integrations/harbor/README.md`:
+- `fh_harbor.agent:FrankensteinHarness` para o Harbor (Terminal-Bench, CWE-bench, FrontierSWE);
+- `fh_harbor.pier_agent:FrankensteinHarness` para o Pier (DeepSWE).
+
+Eles instalam um binário Linux estático do `fh` dentro do contêiner de cada tarefa, rodam `fh run --auto --yes --mode yolo --json` com a instrução da tarefa e devolvem tokens e veredito ao Harbor/Pier.
+
+O que foi verificado antes de entregar este plano (com o modelo simulado do `fh`, em Docker):
+- **Harbor:** uma tarefa real teve nota 1,0 do verificador oficial. Três tarefas em paralelo tiveram 1,0 cada e a memória compartilhada fundiu as três.
+- **Pier:** a instalação durante o build funcionou e o `fh` rodou sem internet. A chamada ao modelo foi barrada porque o proxy do Pier só deixa sair pelas portas 80 e 443 (veja 8.3). O caminho completo no Pier **não** foi confirmado; confirme no piloto.
+
+Preparação, uma vez:
+1. Compile o binário estático: `rustup target add x86_64-unknown-linux-musl`, instale `musl-tools`, e rode `CC_x86_64_unknown_linux_musl=musl-gcc cargo build --release --target x86_64-unknown-linux-musl`. Confira com `file` que o binário é estático.
+2. Instale Harbor e Pier em versões fixas, cada um no seu ambiente Python 3.12 (`uv tool install harbor`, `uv tool install datacurve-pier`), e registre as versões. Exporte `PYTHONPATH=<repo>/integrations/harbor`.
+3. **Endpoint visível dos contêineres.** Os agentes rodam dentro de contêineres, então o proxy de medição precisa escutar num endereço que eles alcancem: o gateway do Docker (`docker network inspect bridge`, em geral `172.17.0.1`). Use `FH_ENDPOINT=http://host.docker.internal:8001/v1` com um overlay de compose (`extra_hosts: ["host.docker.internal:host-gateway"]`, passado com `--extra-docker-compose`) e `--allow-agent-host host.docker.internal`. Mantenha o firewall da seção 3: só o proxy é alcançável.
+4. Os outros harnesses usam os agentes nativos do Harbor (`--agent opencode`, `--agent qwen-code`, `--agent claude-code`; confira com `harbor run --help` e `harbor agent schema <nome>`), configurados para o mesmo proxy e o mesmo `frankenstein-v2`, como nas seções 5.3 a 5.5. O DeepSeek Harness não tem agente nativo: se não houver como plugá-lo (adaptador próprio aceitando endpoint OpenAI-compatível), marque UNSUPPORTED com a evidência.
+
+### 8.2 Terminal-Bench 4.0
+```bash
+harbor run -d terminal-bench@4.0 \
+  --agent fh_harbor.agent:FrankensteinHarness -m openai/frankenstein-v2 \
+  --ak binary=<fh estático> --ak max_concurrency=1 --ak state_dir=WORKDIR/fh-state/tb4-1agente \
+  --ae FH_ENDPOINT=http://host.docker.internal:8001/v1 --ae FH_API_KEY=<chave do lote> \
+  --extra-docker-compose host-gateway.yaml --allow-agent-host host.docker.internal \
+  -n <degrau da rampa> -o WORKDIR/bench/tb4/fh-1agente
+```
+- Modo máximo: o mesmo comando com `--ak max_concurrency=16` e um `state_dir` próprio.
+- Depois rodam OpenCode, Qwen Code, Claude Code e DeepSeek, com o mesmo `-d`, o mesmo `-n` e as mesmas tarefas.
+- Confira o nome exato do dataset com `harbor datasets list` antes de começar.
+- Referência externa (ambiente diferente, fora das estatísticas): Claude Opus 5.5 65,15%, Sonnet 5.5 64,14%, GPT-6 Astra 59,60%.
+
+### 8.3 DeepSWE v1.1 (Pier)
+- Clone `datacurve-ai/deep-swe`, confirme que as tarefas são da v1.1 (README, `task.toml`, imagem `...-v1.1`) e registre o commit.
+- **Binário por URL.** O Pier embute o agente na imagem durante o build, então o binário precisa vir por URL. Sirva-o de uma pasta do host: `python3 -m http.server 8090 --bind 172.17.0.1`, e passe `FH_BINARY_URL=http://172.17.0.1:8090/fh` mais `FH_BINARY_SHA256`.
+- **Endpoint na porta 80 ou 443.** Na execução, a única saída é o proxy Squid do Pier, que só aceita essas portas. Ponha uma segunda escuta do proxy de medição em `172.17.0.1:80` e use `FH_ENDPOINT=http://172.17.0.1/v1`. Confirme no piloto que o `fh` recebe resposta.
+- **Commit obrigatório.** A nota sai de `git diff base..HEAD`, então use `--ak commit=true`: o `fh` commita quando a verificação passa ou quando não havia como verificar.
+
+```bash
+pier run -p deep-swe/tasks \
+  --agent-import-path fh_harbor.pier_agent:FrankensteinHarness -m openai/frankenstein-v2 \
+  --ae FH_ENDPOINT=http://172.17.0.1/v1 --ae FH_BINARY_URL=http://172.17.0.1:8090/fh \
+  --ak commit=true --ak max_concurrency=1 --ak state_dir=WORKDIR/fh-state/deepswe-1agente \
+  -n <degrau> -o WORKDIR/bench/deepswe/fh-1agente
+```
+- **Outros harnesses.** O Pier tem OpenCode e Claude Code nativos. Para o Qwen Code e o DeepSeek, que não estão no Pier, tente as mesmas tarefas no Harbor. Se ele não suportar o formato 1.3 dessas tarefas (`verifier.collect`, `environment_mode = "separate"`), marque UNSUPPORTED com a evidência.
+- A Epoch apontou problemas em pelo menos 23 das 113 tarefas. Se houver lista pública delas, reporte também a nota sem essas tarefas.
+- Referência externa: o líder público tinha 75,4%, e a faixa dos nove modelos da v1.1 ia de 12% a 70%.
+
+### 8.4 CWE-bench v1
+- Antes de tudo, confirme o acesso. O conjunto avaliado (120 tarefas, 73 CWEs, 8 linguagens) é privado. Veja em `cwe-bench.com` se há tarefas públicas ou acesso por pedido. Sem acesso, marque NOT_RUN com o motivo e **pergunte ao dono do projeto** antes de substituir por outro conjunto.
+- Com acesso: Harbor com o mesmo adaptador (seção 8.2).
+- A nota vem do painel oficial de juízes (três modelos de famílias diferentes), que precisa das chaves de API desses provedores, fornecidas pelo dono do projeto. Registre modelos, versões e custo. Os juízes nunca são o Qwen.
+- As tarefas rodam sem internet: confirme que só o endpoint do proxy é alcançável.
+
+### 8.5 Vibe Code Bench (50 especificações públicas)
+- Clone `vals-ai/VibeCodeBench-Openhands-Scaffold` e leia como cada aplicação é gerada e empacotada: código, Docker Compose e estado do banco. Leia também como o avaliador com agente de navegador é chamado.
+- **Adaptador do `fh` (escreva em `WORKDIR/tools/vcb_fh/`).** Para cada especificação, ele cria o mesmo espaço de trabalho vazio que o scaffold cria, roda `fh run --auto --yes --mode yolo --json` com a especificação como tarefa, e empacota o resultado exatamente no formato que o avaliador espera. Valide com 2 especificações antes de rodar as 50.
+- **Outros harnesses.** Use o mesmo adaptador, trocando o comando do agente, para que todos sejam empacotados e avaliados igual. O OpenHands do scaffold não é um dos harnesses comparados; não o use.
+- **Avaliador.** Ele dirige um navegador com um modelo. Esse modelo não pode ser o Qwen (decisão 6): use o modelo oficial do avaliador, com chave fornecida pelo dono do projeto, e registre-o. Se não for possível, marque NOT_RUN com o motivo.
+- Se o adaptador não ficar confiável no piloto, marque NOT_RUN para todos os harnesses, nunca só para alguns.
+
+### 8.6 FrontierSWE v2 (por último)
+- Clone `Proximal-Labs/frontier-swe-v2` e use o runner indicado no README (px-eval, sobre o Harbor). Registre o commit.
+- **GPU.** Muitas tarefas pedem GPU (`gpus` no `task.toml`), e a GPU da máquina já está ocupada pelo vLLM. Rode só as tarefas com `gpus = 0`. As que pedem GPU ficam NOT_RUN ("ambiente: GPU ocupada pelo modelo avaliado"), a menos que exista uma segunda GPU livre; nesse caso, registre qual.
+- **Tempo.** Cada tarefa pode durar até 20 h; o oficial é mean@5. Rode 1 tentativa por tarefa e reporte como mean@1, deixando claro que não é comparável ao mean@5 do placar. Com tempo sobrando, faça mais tentativas só nas tarefas do `fh` e do melhor outro harness.
+- Referência externa: GPT-6 Astra 65,5%, Claude Opus 5.5 62,3%, Sonnet 5.5 61,9% (mean@5, com o harness próprio da Proximal).
+
+### 8.7 Relatório dos benchmarks
+Para cada benchmark e harness, reporte:
+- nota oficial com intervalo de Wilson de 95% (ou média com intervalo por bootstrap, quando a nota for contínua);
+- comparação pareada tarefa a tarefa contra o `fh` modo 1 agente e o `fh` modo máximo;
+- tokens (total e sem cache) por tarefa resolvida, tempo por tarefa, tok/s, `-n` usado;
+- tarefas NOT_RUN e UNSUPPORTED com motivo;
+- a referência externa do placar, marcada como ambiente diferente (outro modelo e, às vezes, outro harness).
+
+Inclua tudo em `relatorio.md`, no PDF e em `results.csv` (coluna `benchmark`).
+
+## 9. Fase 8: teste de capacidade do `fh` em uso extremo (por último, depois de tudo)
 Objetivo (decisão 5): quantos usuários simultâneos o servidor aguenta com o `fh`, e com que tok/s por usuário. Isso fica fora da comparação entre harnesses, então aqui **é permitido** testar variantes de servidor, cada uma com nome próprio e servidor reiniciado.
 
 **Definições.**
@@ -442,7 +544,7 @@ Objetivo (decisão 5): quantos usuários simultâneos o servidor aguenta com o `
 
 Confira cada flag em `vllm serve --help`. Registre para cada variante a capacidade confortável e o limite, e diga qual configuração maximiza usuários confortáveis e qual maximiza a vazão agregada. Podem não ser a mesma.
 
-**Entregável da fase 7:** `WORKDIR/relatorio/capacidade.md` e seção própria no PDF, com:
+**Entregável da fase 8:** `WORKDIR/relatorio/capacidade.md` e seção própria no PDF, com:
 - gráficos de tok/s por usuário (mediana e P10) e tok/s agregado contra usuários simultâneos, para cada técnica e variante;
 - a tabela de capacidade em três níveis;
 - a recomendação final: quantos usuários simultâneos do `fh` a GPU aguenta com conforto, com qual configuração e com que tok/s médio por usuário.
