@@ -12,13 +12,14 @@ Esta versão substitui a primeira (`docs/VALIDACAO_JG_ENG_TESTS.md`) e incorpora
 5. **Teste final de capacidade, só do `fh`.** Ao final de tudo, começa com 20 sessões simultâneas e vai aumentando até onde o servidor aguenta. Mede o tok/s de cada atividade para calcular o tok/s médio por usuário e descobre a capacidade máxima em uso extremo, com outras técnicas de carga além da carga real (seção 9).
 6. **Quem julga a assertividade final é a LLM que conduz os testes, não o Qwen.** O juiz é você, a LLM operadora que está executando este prompt. O Frankenstein V2 (Qwen) aparece só como o modelo avaliado, dentro dos harnesses. Nada do que ele diz sobre o próprio trabalho entra na nota: nem o veredito interno do `fh`, nem o revisor LLM do `fh`, nem o "terminei, todos os testes passam" de qualquer harness. Esses sinais não entram no relatório como métrica. Detalhes na seção 5.0b.
 7. **O `fh` vem sempre primeiro, nas duas versões.** Em cada comparação (jg-eng-tests e cada benchmark público), a ordem é: `fh` modo 1 agente, `fh` modo máximo, e só depois os outros harnesses. Os benchmarks públicos (seção 8) rodam para todos os harnesses, como o jg-eng-tests, com tarefas em paralelo.
+8. **A melhor configuração possível para uma RTX PRO 6000 Blackwell.** Antes de qualquer teste, baixe e compare os checkpoints oficiais do Qwen3.8-27B próprios para essa placa (NVFP4 nativo do Blackwell, FP8, e BF16 como referência de qualidade), ajuste o vLLM e fixe o vencedor para a sessão inteira (seção 2.0).
 
 Nomes usados aqui: **Frankenstein V2** é o modelo (Qwen3.8-27B NVFP4 + MTP=3 no vLLM). **Frankenstein Harness** (`fh`) é o nosso harness. Não confunda os dois no relatório.
 
 ## CONFIGURAÇÃO (preencher antes de colar)
 - REPO: https://github.com/dfnb/jg-eng-tests, fixado no commit `36cbe4741e5730fae876fae3bff6fa167fb18cb7`. Se o HEAD for outro, pare e avise.
-- GPU: `<ex.: RTX PRO 6000 Blackwell 96 GB>`
-- WORKDIR: `<ex.: /workspace/harness-eval>` (precisa de ~150 GB livres: 6 execuções × 130 cópias com node_modules e bin/obj)
+- GPU: uma RTX PRO 6000 Blackwell 96 GB (SM120). O checkpoint e as flags saem da seção 2.0
+- WORKDIR: `<ex.: /workspace/harness-eval>` (precisa de ~150 GB livres para as execuções, mais ~200 GB para os checkpoints candidatos da seção 2.0 e as imagens Docker dos benchmarks)
 - FRANKENSTEIN_HARNESS: repositório https://github.com/cardimvitor/frankenstein-harness, branch `ccr-3bc51f62-prkdq0`. Compilar com `cargo build --release` e usar `target/release/fh`. Registre o commit.
 - EXERCICIOS_EM_PARALELO: rampa gradual 2 → 3 → 4 → 5; depois 6 → 7 → 8 → 9 → 10, um degrau por vez e só se o anterior não prejudicou o desempenho. O teto N_MAX sai da calibração e vale no máximo 10 nesta rodada (seção 5.0a). A escala é a mesma para todos os harnesses
 - TIMEOUT_POR_EXERCICIO: 900 s de parede, contando do início do harness até o processo terminar
@@ -74,6 +75,48 @@ Estimativa de tempo, para planejar: com N_MAX = 10, o pior caso (todos os exerc�
 6. **Verificação do `fh` antes de rodar.** Compile o `fh` no commit escolhido e rode `cargo test --release`: tudo precisa passar. Rode `fh doctor` contra o proxy. Nos pilotos, confirme no JSON de `--json` (`verify.rounds[].checks[].name`) que o `fh` verificou com `scripts/lint` e `scripts/test`, e não com `dotnet test` ou `npm test` inferidos.
 
 ## 2. Fase 1: servidor, configuração validada do Frankenstein V2
+
+### 2.0 Escolha do checkpoint e da configuração para uma RTX PRO 6000 Blackwell (decisão 8, antes de tudo)
+O dono do projeto quer a melhor configuração possível para **uma** RTX PRO 6000 Blackwell (96 GB, SM120). O que sair daqui vira o "Frankenstein V2" da sessão inteira e fica **fixo** em todas as fases seguintes (regra 5). A configuração validada antes, logo abaixo, é a linha de base que os outros candidatos precisam bater.
+
+**Candidatos.** Só pesos oficiais do Qwen3.8-27B ou quantizações fiéis deles, todos com a cabeça MTP do próprio modelo. Nada de fine-tunes, "uncensored", merges ou destilações da comunidade.
+1. `nvidia/Qwen3.8-27B-NVFP4`, a linha de base validada: revisão `dbb8f445`, 122,1 tok/s por fluxo e aceitação do MTP de 75,7%.
+2. `nvidia/Qwen3.8-27B-NVFP4` na revisão mais recente, se for diferente de `dbb8f445`.
+3. `Inferact/Qwen3.8-27B-NVFP4`, citado com aceitação do MTP de 0,897 em outra GPU.
+4. `unsloth/Qwen3.8-27B-NVFP4`, que mantém módulos sensíveis em 8 bits.
+5. FP8 oficial do Qwen, se existir (`Qwen/Qwen3.8-27B-FP8`), como meio-termo entre qualidade e velocidade.
+6. `Qwen/Qwen3.8-27B` em BF16 (~54 GB de pesos), como **referência de qualidade**: cabe na placa, mas sobra pouco KV cache.
+
+Confira no Hugging Face se cada um existe, a revisão, a licença e o model card; registre o hash de cada download. Consulte a receita oficial do vLLM para essa placa (`recipes.vllm.ai/Qwen/Qwen3.8-27B`, alvo RTX Pro 6000) e o model card de cada checkpoint, e use as flags que eles indicam: nome do método MTP, quantização, parsers.
+
+**Configuração a ajustar, com o candidato fixo:**
+- MTP `num_speculative_tokens` em 1, 2, 3 e 4;
+- `kv-cache-dtype` `fp8` contra `auto`;
+- `gpu-memory-utilization` entre 0,85 e 0,92 (a RTX 6000 não tem a memória unificada da DGX Spark; se faltar memória, desça);
+- `max-num-batched-tokens` e chunked prefill;
+- `max-num-seqs` 32 e 64;
+- `max-model-len` 131072, ou 262144 se couber com KV suficiente para N_MAX sessões;
+- a correção do SM120 (`--quantization modelopt_fp4 --block-size 128` com `VLLM_HAS_FLASHINFER_CUBIN=1`) só se o padrão travar.
+
+Use a versão do vLLM mais recente estável que a receita indica (no mínimo 0.29.0) com CUDA 13.x, e registre o driver.
+
+**Como medir.** Nada daqui usa os exercícios do jg-eng-tests nem tarefas dos benchmarks públicos, para não contaminar a comparação.
+- **Qualidade:**
+  - `fh validate-vllm` (tool calls, vazamento de raciocínio, contexto longo);
+  - o corpus embutido do `fh` (`fh eval --tasks` com as tarefas do repositório);
+  - um subconjunto fixo de 40 tarefas do Aider polyglot (`scripts/polyglot_to_tasks.py`, semente registrada), com o `fh` no modo 1 agente.
+- **Velocidade:** tok/s por fluxo com 1 sessão, tok/s agregado com 8 sessões, TTFT P50/P90, aceitação do MTP e KV cache disponível, medidos com `vllm bench serve` usando entradas e saídas de tamanho parecido com o de agentes (prompt de 20–60k tokens com prefixo compartilhado, saída de 500–2000).
+
+**Regra de escolha.**
+1. Elimine o candidato cuja aprovação no Aider polyglot ficar abaixo da BF16 com significância (McNemar exato, p < 0,05), ou que errar tool calls em mais de 1% das chamadas.
+2. Entre os que sobram, escolha o de maior tok/s agregado com 8 sessões, desde que o tok/s por fluxo com 1 sessão não caia mais de 10% em relação ao melhor.
+3. Com o checkpoint escolhido, fixe a combinação de flags com maior tok/s agregado que não aumente erros nem diminua a aprovação.
+
+Grave tudo em `relatorio/escolha_modelo.md`: tabela de candidatos × qualidade × velocidade, a escolha e o motivo. O comando exato vencedor substitui o comando abaixo em todas as fases e vai para o `MANIFEST.json`. Se nenhum candidato bater a linha de base, use a linha de base e registre.
+
+**Tempo-limite desta etapa:** cerca de 6 h. Se não der para medir todos os candidatos, priorize 1, 3, 4 e 6, nessa ordem.
+
+### 2.1 Configuração de referência (linha de base)
 Base: Qwen3.8-27B em NVFP4 (checkpoint `nvidia/Qwen3.8-27B-NVFP4`, revisão `dbb8f445`) com MTP=3, vLLM 0.29.0 ou superior, CUDA 13.x. Resultado de referência nessa configuração: 122,1 tok/s por fluxo (52,2 sem MTP) e aceitação do draft de 75,7%.
 
     VLLM_HAS_FLASHINFER_CUBIN=1 vllm serve nvidia/Qwen3.8-27B-NVFP4 \
