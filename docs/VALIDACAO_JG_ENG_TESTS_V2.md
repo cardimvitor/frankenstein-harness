@@ -13,12 +13,13 @@ Esta versão substitui a primeira (`docs/VALIDACAO_JG_ENG_TESTS.md`) e incorpora
 6. **Quem julga a assertividade final é a LLM que conduz os testes, não o Qwen.** O juiz é você, a LLM operadora que está executando este prompt. O Frankenstein V2 (Qwen) aparece só como o modelo avaliado, dentro dos harnesses. Nada do que ele diz sobre o próprio trabalho entra na nota: nem o veredito interno do `fh`, nem o revisor LLM do `fh`, nem o "terminei, todos os testes passam" de qualquer harness. Esses sinais não entram no relatório como métrica. Detalhes na seção 5.0b.
 7. **O `fh` vem sempre primeiro, nas duas versões.** Em cada comparação (jg-eng-tests e cada benchmark público), a ordem é: `fh` modo 1 agente, `fh` modo máximo, e só depois os outros harnesses. Os benchmarks públicos (seção 8) rodam para todos os harnesses, como o jg-eng-tests, com tarefas em paralelo.
 8. **A melhor configuração possível para uma RTX PRO 6000 Blackwell.** Antes de qualquer teste, baixe e compare os checkpoints oficiais do Qwen3.8-27B próprios para essa placa (NVFP4 nativo do Blackwell, FP8, e BF16 como referência de qualidade), ajuste o vLLM e fixe o vencedor para a sessão inteira (seção 2.0).
+9. **A máquina inteira é da avaliação.** Antes de qualquer teste, libere toda a VRAM e os demais recursos parando os processos que não fazem parte da avaliação, e baixe e instale tudo de uma vez, em paralelo (seção 1, itens 7 e 8).
 
 Nomes usados aqui: **Frankenstein V2** é o modelo (Qwen3.8-27B NVFP4 + MTP=3 no vLLM). **Frankenstein Harness** (`fh`) é o nosso harness. Não confunda os dois no relatório.
 
 ## CONFIGURAÇÃO (preencher antes de colar)
 - REPO: https://github.com/dfnb/jg-eng-tests, fixado no commit `36cbe4741e5730fae876fae3bff6fa167fb18cb7`. Se o HEAD for outro, pare e avise.
-- GPU: uma RTX PRO 6000 Blackwell 96 GB (SM120). O checkpoint e as flags saem da seção 2.0
+- GPU: uma RTX PRO 6000 Blackwell 96 GB (SM120), inteira para a avaliação (decisão 9). O checkpoint e as flags saem da seção 2.0
 - WORKDIR: `<ex.: /workspace/harness-eval>` (precisa de ~150 GB livres para as execuções, mais ~200 GB para os checkpoints candidatos da seção 2.0 e as imagens Docker dos benchmarks)
 - FRANKENSTEIN_HARNESS: repositório https://github.com/cardimvitor/frankenstein-harness, branch `ccr-3bc51f62-prkdq0`. Compilar com `cargo build --release` e usar `target/release/fh`. Registre o commit.
 - EXERCICIOS_EM_PARALELO: rampa gradual 2 → 3 → 4 → 5; depois 6 → 7 → 8 → 9 → 10, um degrau por vez e só se o anterior não prejudicou o desempenho. O teto N_MAX sai da calibração e vale no máximo 10 nesta rodada (seção 5.0a). A escala é a mesma para todos os harnesses
@@ -74,6 +75,26 @@ Estimativa de tempo, para planejar: com N_MAX = 10, o pior caso (todos os exerc�
    Registre a tabela exercício × (setup, test inicial, lint inicial, grader inicial, test e lint com a referência). Cada falha de ambiente é corrigida na imagem ou no procedimento antes de continuar; nunca nos arquivos do exercício. Um exercício que não pode ser consertado assim sai do denominador, listado com o motivo.
 6. **Verificação do `fh` antes de rodar.** Compile o `fh` no commit escolhido e rode `cargo test --release`: tudo precisa passar. Rode `fh doctor` contra o proxy. Nos pilotos, confirme no JSON de `--json` (`verify.rounds[].checks[].name`) que o `fh` verificou com `scripts/lint` e `scripts/test`, e não com `dotnet test` ou `npm test` inferidos.
 
+7. **Máquina dedicada: libere todos os recursos (decisão 9).** Esta GPU e esta máquina são só da avaliação. Faça isto antes de baixar ou instalar qualquer coisa que dependa de recurso.
+   1. **Inventário antes de mexer.** Grave em `WORKDIR/maquina/antes.txt`: `nvidia-smi`, `nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv`, `ps aux --sort=-%mem | head -40`, `ps aux --sort=-%cpu | head -40`, `systemctl list-units --type=service --state=running`, `docker ps -a`, `df -h`, `free -h`, `lscpu`, `who`, `uptime`.
+   2. **Libere a GPU.** Pare tudo que usa a placa: vLLM ou Ollama antigos, notebooks, treinos, contêineres com `--gpus`, outros servidores de modelo. Primeiro do jeito educado (`systemctl stop`, `docker stop`, `SIGTERM` e espera de 10 s), depois `SIGKILL` no que sobrar. Impeça que voltem durante a sessão (`systemctl disable --now`, `docker update --restart=no <contêiner>`, ou `systemctl mask` temporário). Alvo: `nvidia-smi` sem nenhum processo de computação e com menos de 500 MiB de VRAM usada. Se a VRAM continuar ocupada sem processo dono, tente `fuser -v /dev/nvidia*` e `nvidia-smi --gpu-reset`; se ainda assim não liberar, pare e avise o dono (pode exigir reiniciar a máquina).
+   3. **Libere CPU, RAM e disco.** Pare os processos que consomem CPU ou RAM sem fazer parte da avaliação. Libere disco com `docker container prune`, `docker builder prune` e `docker image prune` (só imagens sem uso e sem nome). Não apague volumes, bancos de dados nem arquivos de pessoas.
+   4. **Nunca mate, em nenhuma hipótese:** a sua própria sessão e o shell em que você roda (inclusive `tmux`/`screen`), o `sshd` e as conexões SSH ativas, `systemd`/`init`, `dockerd`/`containerd`, a rede (`NetworkManager`, `systemd-networkd`, resolvedor de nomes), o driver da NVIDIA e o `nvidia-persistenced`.
+   5. **Pergunte antes de parar:** processo de outro usuário com sessão interativa ativa, e qualquer serviço que pareça de produção ou guarde dados de outras pessoas (banco de dados, servidor web, fila). Se for ambíguo, pergunte; não presuma.
+   6. **Registre tudo.** `WORKDIR/maquina/parado.md`: o que foi parado, o dono, o comando e o comando para restaurar. Ao final da sessão, ofereça restaurar.
+   7. **Desempenho (precisa de root; sem root, anote que não deu):** `nvidia-smi -pm 1` (modo persistente), governador de CPU em `performance` (`cpupower frequency-set -g performance`), `ulimit -n` alto, `/dev/shm` com pelo menos 16 GB (e `--shm-size` nos contêineres) e swappiness baixo. Grave os valores em `WORKDIR/maquina/depois.txt`, junto de um segundo `nvidia-smi` mostrando a VRAM livre.
+   8. **Reserva.** O vLLM e o proxy têm prioridade. Deixe sempre livres pelo menos 4 núcleos e 16 GB de RAM para eles, e limite o paralelismo das tarefas de acordo (as `cpus` e `memory_mb` de cada tarefa são o teto; reduza `-n` antes de tirar recurso do vLLM).
+8. **Baixe e instale tudo logo no começo, em paralelo.** Primeiro confira o espaço em disco contra a soma do que vai baixar (checkpoints, imagens Docker, datasets, caches); se faltar, pare e avise. Depois dispare, em paralelo e em segundo plano, cada item com seu log em `WORKDIR/instalacao/<item>.log`, com no máximo 4 a 6 downloads simultâneos, para não saturar disco e rede:
+   - os checkpoints candidatos da seção 2.0 (`hf download` com `HF_HUB_ENABLE_HF_TRANSFER=1`);
+   - vLLM em versão fixa, ou a sua imagem Docker, e o driver/CUDA que a receita pede;
+   - imagens Docker: as bases dos exercícios, as dos benchmarks (Terminal-Bench, DeepSWE, FrontierSWE), as do proxy e do LiteLLM;
+   - toolchains: Rust (e o alvo musl do `fh`), .NET SDK 10.0.401, Node 24.15.0, `pwsh`, Python 3.12 com `uv`, e os language servers;
+   - os harnesses: OpenCode, Qwen Code, Claude Code, DeepSeek Harness, LiteLLM;
+   - Harbor e Pier em versões fixas, e os datasets e repositórios: `jg-eng-tests`, `datacurve-ai/deep-swe`, `Proximal-Labs/frontier-swe-v2` (cerca de 770 MB), `vals-ai/VibeCodeBench-Openhands-Scaffold`, e `harbor download` dos datasets do Harbor Hub;
+   - os caches de pacotes dos exercícios (`dotnet restore`, `npm ci`), já que depois os agentes rodam sem rede.
+
+   Compile o `fh` (nativo e estático) enquanto os downloads rodam. Ao terminar, verifique tudo (checksums dos checkpoints, `--version` de cada ferramenta) e grave `WORKDIR/instalacao/VERSOES.md`. O que falhou é repetido uma vez; se falhar de novo, vai para o `REVISAO.md`. Nada pode depender de internet depois desta etapa, exceto as chamadas de juízes externos do CWE-bench e do Vibe Code Bench, se o dono liberar.
+
 ## 2. Fase 1: servidor, configuração validada do Frankenstein V2
 
 ### 2.0 Escolha do checkpoint e da configuração para uma RTX PRO 6000 Blackwell (decisão 8, antes de tudo)
@@ -92,7 +113,7 @@ Confira no Hugging Face se cada um existe, a revisão, a licença e o model card
 **Configuração a ajustar, com o candidato fixo:**
 - MTP `num_speculative_tokens` em 1, 2, 3 e 4;
 - `kv-cache-dtype` `fp8` contra `auto`;
-- `gpu-memory-utilization` entre 0,85 e 0,92 (a RTX 6000 não tem a memória unificada da DGX Spark; se faltar memória, desça);
+- `gpu-memory-utilization` entre 0,85 e 0,95 (a RTX 6000 não tem a memória unificada da DGX Spark; como a GPU está livre de outros processos desde o item 7 da fase 0, pode subir enquanto estável; se faltar memória, desça);
 - `max-num-batched-tokens` e chunked prefill;
 - `max-num-seqs` 32 e 64;
 - `max-model-len` 131072, ou 262144 se couber com KV suficiente para N_MAX sessões;

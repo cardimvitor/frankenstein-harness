@@ -15,31 +15,38 @@ DADOS
 
 COMO TRABALHAR
 1. Clone o repositório em WORKDIR/frankenstein-harness, faça checkout da branch e leia docs/VALIDACAO_JG_ENG_TESTS_V2.md inteiro antes de executar qualquer coisa. Leia também README.md, docs/FANOUT.md, docs/LITELLM.md e integrations/harbor/README.md, porque o documento se refere a eles.
-2. Revise o plano antes de executar. Escreva WORKDIR/REVISAO.md com:
+2. Prepare a máquina e dispare os downloads (itens 7 e 8 da fase 0 do documento, decisão 9). Faça logo depois de ler o plano, e deixe os downloads rodando **em paralelo** com a revisão do passo 3:
+   - A máquina e a GPU são inteiramente da avaliação. Libere toda a VRAM: pare e mate o que usar a placa (vLLM ou Ollama antigos, notebooks, treinos, contêineres com --gpus) e os processos que gastem CPU e RAM sem fazer parte da avaliação. Primeiro SIGTERM, depois SIGKILL; impeça que voltem; confirme no nvidia-smi que não há processo de computação e que a VRAM usada está abaixo de 500 MiB.
+   - Antes, grave o inventário (WORKDIR/maquina/antes.txt); depois registre o que parou e como restaurar (WORKDIR/maquina/parado.md).
+   - Nunca mate: a sua própria sessão e shell, sshd e conexões SSH ativas, systemd, dockerd e containerd, a rede, o driver da NVIDIA. Pergunte antes de parar processo de outro usuário com sessão ativa, ou serviço que pareça de produção ou guarde dados de outras pessoas.
+   - Aplique os ajustes de desempenho da fase 0 (modo persistente da GPU, governador de CPU, ulimit, /dev/shm) e deixe 4 núcleos e 16 GB de RAM livres para o vLLM e o proxy.
+   - Confira o espaço em disco e baixe e instale tudo em paralelo, em segundo plano, com log por item em WORKDIR/instalacao/: checkpoints, vLLM, imagens Docker, toolchains, harnesses, Harbor e Pier, datasets e repositórios dos benchmarks, caches de pacotes dos exercícios. No máximo 4 a 6 downloads ao mesmo tempo. Compile o fh enquanto baixa. Ao fim, verifique checksums e versões (WORKDIR/instalacao/VERSOES.md).
+3. Revise o plano antes de executar. Escreva WORKDIR/REVISAO.md com:
    - tudo que estiver errado, ambíguo, contraditório, desatualizado ou impossível nesta máquina, com a seção do documento e a correção proposta;
    - o que falta para cumprir as decisões do dono;
    - os riscos de tempo, disco e GPU.
 
    Confira de verdade, não só lendo: versões e nomes de datasets (Harbor Hub, repositórios dos benchmarks), existência dos checkpoints no Hugging Face, flags do vLLM instalado, e se os scripts e adaptadores do repositório rodam (`cargo test --release`, `python3 -m py_compile integrations/harbor/fh_harbor/*.py`). Corrija o que for claramente erro de digitação ou de comando na sua cópia de trabalho do plano (WORKDIR/plano-ajustado.md) e anote cada mudança. Mudanças que alteram uma decisão minha, ou que mudam o que é comparado, você me pergunta antes. Depois siga.
-3. Configure a melhor combinação possível para esta GPU (decisão 8 e seção 2.0 do documento). Baixe os checkpoints oficiais do Qwen3.8-27B próprios para o Blackwell:
+4. Com a GPU livre e os downloads prontos, configure a melhor combinação possível para esta GPU (decisão 8 e seção 2.0 do documento). Use os checkpoints oficiais do Qwen3.8-27B próprios para o Blackwell:
    - NVFP4 da NVIDIA (`nvidia/Qwen3.8-27B-NVFP4`) e as outras quantizações fiéis listadas;
    - o FP8 oficial, se existir;
    - o BF16 como referência de qualidade.
 
    Ajuste o vLLM (MTP, KV cache, memória, lote, contexto) seguindo a receita oficial do vLLM para a RTX Pro 6000 e os model cards. Meça qualidade e velocidade sem usar nenhuma tarefa da avaliação, escolha pela regra da seção 2.0 e fixe o vencedor para a sessão inteira. Nada de fine-tunes, "uncensored" ou merges da comunidade.
-4. Escreva WORKDIR/PLANO.md: a lista numerada de todos os passos do documento, fase por fase, até EXECUTAR_ATE, cada passo com o critério de "pronto" (o que precisa existir ou passar). Marque o que depende de decisão minha. Depois execute o plano na ordem, sem pular fases.
-5. Mantenha WORKDIR/PROGRESSO.md atualizado a cada passo concluído: o que foi feito, comando principal, resultado (números reais), arquivos gerados, problemas. Mantenha também o WORKDIR/state.json que o documento pede, para retomar sem refazer nada se a sessão cair. Ao reiniciar, leia PROGRESSO.md e state.json primeiro e continue de onde parou.
-6. Fim de cada fase: confira os critérios de "pronto" daquela fase e escreva um resumo curto em PROGRESSO.md (o que passou, o que falhou, números principais). Só então comece a próxima. As fases 0 e 1 bloqueiam: se algo falhar ali, resolva antes de seguir (decisão 3 do documento).
-7. Escreva os scripts que o documento pede (proxy de medição, coletor de /metrics e nvidia-smi, orquestrador com rampa e retomada, cópia e isolamento dos exercícios, correção, anonimização para a revisão às cegas, análise estatística, relatório). Guarde todos em WORKDIR/tools/, com um README curto, e teste cada um isoladamente antes de usá-lo na execução que conta.
-8. Tudo que for sintaxe de ferramenta de terceiros (flags do vLLM, OpenCode, Qwen Code, Claude Code, LiteLLM, vllm bench, Harbor, Pier) você confere com --help ou na documentação da versão instalada. Nunca use sintaxe de memória. Registre a versão de cada ferramenta.
-9. Ordem: em toda comparação (jg-eng-tests e cada benchmark público) o fh roda primeiro, no modo 1 agente e depois no modo máximo, e só então os outros harnesses. Não troque essa ordem.
-10. Não invente resultados. O que não foi medido fica NOT_RUN ou N/D, com o motivo. Um resultado ruim do nosso harness é um achado: registre com evidência e não esconda.
+5. Escreva WORKDIR/PLANO.md: a lista numerada de todos os passos do documento, fase por fase, até EXECUTAR_ATE, cada passo com o critério de "pronto" (o que precisa existir ou passar). Marque o que depende de decisão minha. Depois execute o plano na ordem, sem pular fases.
+6. Mantenha WORKDIR/PROGRESSO.md atualizado a cada passo concluído: o que foi feito, comando principal, resultado (números reais), arquivos gerados, problemas. Mantenha também o WORKDIR/state.json que o documento pede, para retomar sem refazer nada se a sessão cair. Ao reiniciar, leia PROGRESSO.md e state.json primeiro e continue de onde parou.
+7. Fim de cada fase: confira os critérios de "pronto" daquela fase e escreva um resumo curto em PROGRESSO.md (o que passou, o que falhou, números principais). Só então comece a próxima. As fases 0 e 1 bloqueiam: se algo falhar ali, resolva antes de seguir (decisão 3 do documento).
+8. Escreva os scripts que o documento pede (proxy de medição, coletor de /metrics e nvidia-smi, orquestrador com rampa e retomada, cópia e isolamento dos exercícios, correção, anonimização para a revisão às cegas, análise estatística, relatório). Guarde todos em WORKDIR/tools/, com um README curto, e teste cada um isoladamente antes de usá-lo na execução que conta.
+9. Tudo que for sintaxe de ferramenta de terceiros (flags do vLLM, OpenCode, Qwen Code, Claude Code, LiteLLM, vllm bench, Harbor, Pier) você confere com --help ou na documentação da versão instalada. Nunca use sintaxe de memória. Registre a versão de cada ferramenta.
+10. Ordem: em toda comparação (jg-eng-tests e cada benchmark público) o fh roda primeiro, no modo 1 agente e depois no modo máximo, e só então os outros harnesses. Não troque essa ordem.
+11. Não invente resultados. O que não foi medido fica NOT_RUN ou N/D, com o motivo. Um resultado ruim do nosso harness é um achado: registre com evidência e não esconda.
 
 QUANDO PARAR E ME PERGUNTAR
 - O HEAD do jg-eng-tests não é 36cbe4741e5730fae876fae3bff6fa167fb18cb7.
 - Nenhum checkpoint candidato sobe no vLLM desta máquina, nem a configuração de referência do documento.
 - Falta algo que só eu posso dar (credencial, token do Hugging Face para um checkpoint restrito, acesso, instalação que exige root que você não tem, espaço em disco).
 - Falta acesso ou chave que só eu posso dar para um benchmark (conjunto privado do CWE-bench, chaves dos juízes do CWE-bench ou do avaliador do Vibe Code Bench).
+- Um processo que você ia parar é de outro usuário com sessão ativa ou parece um serviço de produção, ou a VRAM não libera nem com o reset da GPU (pode exigir reiniciar a máquina).
 - Uma regra do documento se mostrou impossível de cumprir como está escrita. Explique e proponha a alternativa; não improvise em silêncio.
 Fora esses casos, siga sozinho até EXECUTAR_ATE.
 
@@ -50,6 +57,7 @@ O QUE NÃO FAZER
 - Não use o Qwen/vLLM, nem nenhum harness avaliado, para julgar, resumir ou classificar resultados. O julgamento final é seu.
 - Não mude a configuração do servidor entre harnesses na comparação principal.
 - Não faça push para o repositório do harness. Tudo fica em WORKDIR.
+- Ao liberar recursos, não mate a sua própria sessão, o sshd, a rede, o dockerd nem o driver da GPU, e não apague volumes, bancos de dados nem arquivos de pessoas.
 
 ENTREGA
 Ao terminar (ou ao atingir EXECUTAR_ATE ou um limite), gere os entregáveis de WORKDIR/relatorio/ descritos no documento e me responda com:
