@@ -90,6 +90,26 @@ def machine(workdir: str, min_disk: int) -> None:
     check("os", "PASS" if "Linux" in out else "FAIL", out.replace("\n", " "), "Linux is required")
 
 
+def hogs() -> None:
+    """Who is using the machine right now. The machine is rented and dedicated: anything not part of the evaluation should go in phase 0."""
+    rc, out = sh("ps -eo pid,user,pcpu,pmem,comm --sort=-pcpu | head -8")
+    check("resources.top_cpu", "PASS", "top CPU users:\n         " + out.replace("\n", "\n         ") if rc == 0 else "ps failed")
+    rc, out = sh("ps -eo pid,user,pcpu,pmem,comm --sort=-pmem | head -6")
+    check("resources.top_mem", "PASS", "top memory users:\n         " + out.replace("\n", "\n         ") if rc == 0 else "ps failed")
+    rc, out = sh("cat /proc/loadavg")
+    load = float(out.split()[0]) if rc == 0 and out.split() else 0.0
+    cpus = os.cpu_count() or 1
+    check("resources.load", "PASS" if load < cpus * 0.25 else "WARN", f"load average {load:.1f} on {cpus} cores", "something is busy: find it in the list above and, if it is not part of the evaluation, stop it in phase 0")
+    rc, out = sh("free -m | awk '/Swap/ {print $3\" of \"$2\" MiB swap used\"}'")
+    check("resources.swap", "PASS", out or "no swap info")
+    rc, out = sh("systemctl list-units --type=service --state=running --no-legend 2>/dev/null | awk '{print $1}' | head -60 | tr '\\n' ' '")
+    check("resources.services", "PASS", ("running services: " + out[:600]) if out else "systemd not available or no services listed")
+    rc, out = sh("cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null")
+    check("resources.cpu_governor", "PASS" if out in ("", "performance") else "WARN", out or "not exposed (virtualized host)", "cpupower frequency-set -g performance")
+    rc, out = sh("nvidia-smi --query-gpu=persistence_mode,power.limit,power.max_limit,clocks.max.sm --format=csv,noheader")
+    check("resources.gpu_settings", "PASS", out or "n/a", "enable persistence mode; leave the power limit at its maximum so the card is not throttled")
+
+
 def containers() -> None:
     rt = None
     for cand in ("docker", "podman"):
@@ -180,7 +200,7 @@ def main() -> int:
     ap.add_argument("--min-disk-gb", type=int, default=300)
     ap.add_argument("--json")
     a = ap.parse_args()
-    for section in (gpu, lambda: machine(a.workdir, a.min_disk_gb), containers, toolchain, network, aijail):
+    for section in (gpu, lambda: machine(a.workdir, a.min_disk_gb), hogs, containers, toolchain, network, aijail):
         section()
     fails = [r for r in RESULTS if r["status"] == "FAIL"]
     warns = [r for r in RESULTS if r["status"] == "WARN"]
