@@ -85,6 +85,11 @@ pub struct Config {
     pub auth_token_ttl_secs: u64,
     /// opt-in local JSONL of task outcomes and timings (never leaves the machine)
     pub telemetry: bool,
+    /// "use" (default) or "off": with "off" learned skills are still created and improved, but never put in the prompt
+    pub memory: String,
+    /// max-parallel mode: read-only scouts and/or file-partitioned workers run in parallel, then ONE agent consolidates
+    /// every finding and solution (needs maxConcurrency > 1)
+    pub consolidate: bool,
     pub sampling: SamplingSet,
 }
 
@@ -115,6 +120,8 @@ impl Default for Config {
             llm_compaction: true,
             api_key_store: "auto".into(),
             telemetry: false,
+            memory: "use".into(),
+            consolidate: false,
             client_cert: String::new(),
             client_key: String::new(),
             ca_cert: String::new(),
@@ -202,6 +209,12 @@ pub fn load_config(cwd: &Path, env: &Env) -> Result<Config> {
     }
     if let Some(x) = env.get("FH_MAX_CONCURRENCY").and_then(|s| s.parse().ok()) {
         cfg.max_concurrency = x;
+    }
+    if let Some(x) = env.get("FH_MEMORY") {
+        cfg.memory = if x.eq_ignore_ascii_case("off") || x == "0" || x.eq_ignore_ascii_case("none") { "off".into() } else { "use".into() };
+    }
+    if let Some(x) = env.get("FH_CONSOLIDATE") {
+        cfg.consolidate = x == "1" || x.eq_ignore_ascii_case("true");
     }
     cfg.endpoint = cfg.endpoint.trim_end_matches('/').to_string();
     if cfg.metrics_url.is_empty() {

@@ -5,6 +5,7 @@ use crate::funnel::intake::{inspect_repo, intake, render_plan, Intake, IntakeArg
 use crate::llm::client::{LlmClient, LlmStats};
 use crate::llm::metrics::{delta, fetch_metrics, MetricsDelta};
 use crate::orchestrator::governor::{Governor, MetricsFn};
+use crate::orchestrator::consolidate::{consolidator_message, render_findings, run_scouts};
 use crate::orchestrator::master::{owners_of, run_workers, MasterOptions, WorkerResult};
 use crate::agent::prompt::{context_block, ContextParts};
 use crate::session::checkpoint::{Changes, Checkpoints};
@@ -157,6 +158,11 @@ pub struct TaskResult {
     pub rejected_patch: Option<String>,
     pub plan: Option<Intake>,
     pub skills_used: Vec<String>,
+    /// learned skills the gate selected but that memory-off mode kept out of the prompt
+    pub skills_withheld: Vec<String>,
+    /// read-only scouts that returned a report, and whether one agent consolidated parallel work
+    pub scouts: usize,
+    pub consolidated: bool,
     pub gate: Option<(f64, u32, String)>,
     pub timings: Timings,
     pub llm: LlmStats,
@@ -181,6 +187,9 @@ impl TaskResult {
             rejected_patch: None,
             plan: None,
             skills_used: vec![],
+            skills_withheld: vec![],
+            scouts: 0,
+            consolidated: false,
             gate: None,
             timings: Timings::default(),
             llm: LlmStats::default(),
@@ -208,7 +217,8 @@ impl TaskResult {
         });
         json!({
             "verdict": self.verdict, "final": self.final_text, "reason": self.reason, "changed": self.changed, "rounds": self.rounds,
-            "rolledBack": self.rolled_back, "rejectedPatch": self.rejected_patch, "plan": plan, "skillsUsed": self.skills_used,
+            "rolledBack": self.rolled_back, "rejectedPatch": self.rejected_patch, "plan": plan, "skillsUsed": self.skills_used, "skillsWithheld": self.skills_withheld,
+            "consolidation": {"scouts": self.scouts, "consolidated": self.consolidated},
             "gate": self.gate.as_ref().map(|g| json!({"ms": g.0, "llmCalls": g.1, "decision": g.2})),
             "timings": {"gateMs": self.timings.gate_ms, "intakeMs": self.timings.intake_ms, "workMs": self.timings.work_ms, "verifyMs": self.timings.verify_ms, "totalMs": self.timings.total_ms},
             "llm": {"requests": self.llm.requests, "promptTokens": self.llm.prompt_tokens, "completionTokens": self.llm.completion_tokens, "cachedTokens": self.llm.cached_tokens, "toolCalls": self.llm.tool_calls, "repaired": self.llm.repaired, "malformed": self.llm.malformed, "thinkLeaks": self.llm.think_leaks, "retries": self.llm.retries},
@@ -433,6 +443,16 @@ impl Engine {
             }
             timings.gate_ms += te.elapsed().as_secs_f64() * 1000.0;
         }
+        // memory off: what fh learned is still created and improved, but never put in the prompt (builtin packs stay)
+        let mut withheld: Vec<Skill> = vec![];
+        if self.cfg.memory == "off" {
+            let (keep, held): (Vec<Skill>, Vec<Skill>) = std::mem::take(&mut g.selected).into_iter().partition(|s| s.source == "builtin");
+            g.selected = keep;
+            withheld = held;
+            for s in &withheld {
+                io.notice(NoticeKind::Skill, &format!("memory off: not using learned skill \"{}\"", s.name));
+            }
+        }
         for s in &g.selected {
             io.notice(NoticeKind::Skill, &format!("using {} skill \"{}\"", s.scope.as_str(), s.name));
         }
@@ -588,6 +608,8 @@ impl Engine {
         let mut agent: Option<AgentResult> = None;
         let mut agent_sum: Option<AgentSummary> = None;
         let mut workers: Vec<WorkerResult> = vec![];
+        let consolidate = self.cfg.consolidate && self.cfg.max_concurrency > 1;
+        let (mut scouts_n, mut consolidated) = (0usize, false);
         if multi {
             let io2 = io.clone();
             let mo = MasterOptions {
@@ -607,9 +629,39 @@ impl Engine {
                 llm_compaction: self.cfg.llm_compaction,
             };
             workers = run_workers(&plan.enriched, &plan.subtasks, &mo).await;
+            if consolidate && !workers.is_empty() {
+                // one agent reviews and reconciles everything the workers did
+                io.notice(NoticeKind::Phase, "consolidating the workers' results");
+                let mut ao = self.agent_options(&o, &context, &wrap);
+                ao.max_steps = 25;
+                let r = run_agent(&consolidator_message(&task_text, &workers), ao).await;
+                if r.stopped != crate::agent::Stopped::Error {
+                    consolidated = true;
+                    history = Some(r.messages.clone());
+                    agent_sum = Some(AgentSummary { steps: r.steps, tool_calls: r.tool_calls, failed_tools: r.failed_tools, stopped: r.stopped.as_str().into() });
+                    agent = Some(r);
+                } else {
+                    io.notice(NoticeKind::Warn, &format!("consolidation failed ({}); verifying the workers' result as it is", r.error.as_deref().unwrap_or("agent error")));
+                }
+            }
         } else {
             let mut ao = self.agent_options(&o, &context, &wrap);
             let mut first_msg = task_text.clone();
+            if consolidate && resumed.is_none() {
+                // the work does not split into disjoint parts: scouts investigate different angles in parallel,
+                // then this one agent consolidates their findings and implements the change
+                io.notice(NoticeKind::Phase, "scouting in parallel");
+                let mut so = self.agent_options(&o, &context, &wrap);
+                so.mode = Mode::Plan;
+                let n = self.cfg.max_concurrency.min(crate::orchestrator::consolidate::SCOUT_FOCI.len());
+                let budget = if self.cfg.max_task_tokens > 0 { Some(self.cfg.max_task_tokens / 4 / n.max(1) as u64) } else { None };
+                let found = run_scouts(&so, &task_text, n, &gov, budget).await;
+                scouts_n = found.len();
+                if !found.is_empty() {
+                    first_msg = format!("{first_msg}\n\n{}", render_findings(&found));
+                    consolidated = true;
+                }
+            }
             if let Some(r) = &resumed {
                 if let Some(h) = &r.history {
                     ao.history = Some(h.clone());
@@ -770,13 +822,14 @@ impl Engine {
             let diff2 = if report.verdict == Verdict::Pass { task_diff.chars().take(6000).collect::<String>() } else { String::new() };
             let rounds_used = report.rounds.len();
             let used2 = used.clone();
+            let withheld2 = withheld.clone();
             let cwd2 = self.cwd.clone();
             let h = tokio::spawn(async move {
                 evaluate(&store, POLICE_DEFAULTS);
                 promote_eligible(&store, POLICE_DEFAULTS.promote_n);
                 if verdict == "pass" && rounds_used > 1 {
                     // IMPROVE: a used skill did not prevent rework
-                    for sk in used2.iter().filter(|s| s.source != "builtin") {
+                    for sk in used2.iter().chain(withheld2.iter()).filter(|s| s.source != "builtin") {
                         if let Some(n) = improve_used(&store, &llm, sk, MineInput { task: &task_s, diff: &diff2, changed: &changed2, fp: &fp2, verdict: &verdict }, None).await {
                             io2.notice(NoticeKind::Skill, &format!("improved project skill: {n}"));
                             break;
@@ -806,6 +859,9 @@ impl Engine {
         res.rejected_patch = rejected_patch;
         res.plan = Some(plan);
         res.skills_used = skills_used;
+        res.skills_withheld = withheld.iter().map(|s| s.name.clone()).collect();
+        res.scouts = scouts_n;
+        res.consolidated = consolidated;
         res.gate = Some((g.ms, g.llm_calls, g.decision.to_string()));
         res.reviewer = Some(report.reviewer.clone());
         res.verify = Some(report);

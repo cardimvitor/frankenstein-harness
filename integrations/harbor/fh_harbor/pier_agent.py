@@ -12,7 +12,9 @@ Settings come from ``--ak name=value`` or the agent/host environment:
     binary_sha256 (FH_BINARY_SHA256)  optional checksum of that file
     endpoint (FH_ENDPOINT), model (FH_MODEL), context_window (FH_CONTEXT_WINDOW),
     max_concurrency (FH_MAX_CONCURRENCY), commit ("true": DeepSWE grades `git diff base..HEAD`, so commit the result),
-    state_dir (FH_STATE_DIR): host directory with learned skills shared across trials.
+    state_dir (FH_STATE_DIR): host directory with learned skills shared across trials,
+    memory ("off": learned skills are created and improved but never used), consolidate (max-parallel: scouts/workers,
+    then one consolidating agent; needs max_concurrency > 1), mode ("direct" = the model alone, no harness).
 """
 
 from __future__ import annotations
@@ -49,6 +51,9 @@ class FrankensteinHarness(BaseInstalledAgent):
         max_concurrency: int | str | None = None,
         commit: bool | str = False,
         state_dir: str | None = None,
+        memory: str | None = None,
+        consolidate: bool | str = False,
+        mode: str = "run",
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
@@ -60,6 +65,9 @@ class FrankensteinHarness(BaseInstalledAgent):
         self._max_concurrency = max_concurrency
         self._commit = _truthy(commit)
         self._state_dir = state_dir
+        self._memory = memory
+        self._consolidate = _truthy(consolidate)
+        self._mode = mode
 
     @staticmethod
     def name() -> str:
@@ -132,16 +140,21 @@ class FrankensteinHarness(BaseInstalledAgent):
         cw = self._get(self._context_window, "FH_CONTEXT_WINDOW")
         if cw:
             env["FH_CONTEXT_WINDOW"] = str(cw)
+        mem = self._get(self._memory, "FH_MEMORY")
+        if mem:
+            env["FH_MEMORY"] = mem
+        if self._consolidate:
+            env["FH_CONSOLIDATE"] = "1"
         mc = self._get(self._max_concurrency, "FH_MAX_CONCURRENCY")
         try:
             await self.exec_as_agent(
                 environment,
-                command=common.run_command(instruction, logs_dir="/logs/agent", max_concurrency=int(mc) if mc else None, commit=self._commit),
+                command=common.run_command(instruction, logs_dir="/logs/agent", max_concurrency=int(mc) if mc else None, commit=self._commit, direct=self._mode == "direct"),
                 env=env,
             )
         finally:
             sd = self._get(self._state_dir, "FH_STATE_DIR")
-            if sd:
+            if sd and self._mode != "direct":
                 with tempfile.TemporaryDirectory(prefix="fh-state-") as tmp:
                     out = Path(tmp) / "skills.db"
                     try:

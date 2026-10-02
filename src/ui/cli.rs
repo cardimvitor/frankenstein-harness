@@ -25,6 +25,7 @@ Usage:
   fh run \"<task>\" [options]   run one task
   fh serve [--port N]         local web UI (127.0.0.1 only)
   fh --version                print the version
+  fh direct \"<task>\"        the model alone, no harness (one request, edits applied as written): the baseline
   fh doctor                   check endpoint, model, auth, metrics, sandbox
   fh validate-vllm [options]  measure MTP, prefix cache, tool calls, long context, concurrency
   fh eval --tasks <dir> [options]   run the eval corpus (--runner fh|fh-single|qwen|both|all|orch)
@@ -54,8 +55,10 @@ Options for run/chat:
   --cwd <dir>       workspace (default: current directory)
   --thinking        show model reasoning (plain mode; in the TUI press Ctrl+T)
   --plain           line-based chat instead of the full-screen UI
+  --no-memory       still create and improve skills, but never put learned skills in the prompt (an ablation of memory)
+  --consolidate     with maxConcurrency > 1: parallel scouts/workers, then one agent consolidates all findings and solutions
 
-Environment: FH_ENDPOINT, FH_MODEL, FH_API_KEY (or the variable named by FH_API_KEY_ENV), FH_AUTH_SCHEME, FH_METRICS_URL, FH_CONTEXT_WINDOW, FH_MAX_CONCURRENCY, FH_HOME";
+Environment: FH_ENDPOINT, FH_MODEL, FH_API_KEY (or the variable named by FH_API_KEY_ENV), FH_AUTH_SCHEME, FH_METRICS_URL, FH_CONTEXT_WINDOW, FH_MAX_CONCURRENCY, FH_MEMORY=off, FH_CONSOLIDATE=1, FH_SHARED_STORE=1, FH_HOME";
 
 pub struct Args {
     pub cmd: String,
@@ -181,13 +184,19 @@ pub async fn main(argv: Vec<String>) -> i32 {
         return 2;
     }
     let mut env = process_env();
-    let cfg = match load_config(&cwd, &env) {
+    let mut cfg = match load_config(&cwd, &env) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("{e}");
             return 2;
         }
     };
+    if args.has("no-memory") {
+        cfg.memory = "off".into();
+    }
+    if args.has("consolidate") {
+        cfg.consolidate = true;
+    }
     // API key: env var first, then the OS keychain (unless configured otherwise)
     if cfg.api_key_store != "env" && cfg.auth_scheme != "none" && env.get(&cfg.api_key_env).map(|s| s.is_empty()).unwrap_or(true) {
         if let Some(k) = crate::secrets::get(&cfg.api_key_env) {
@@ -204,6 +213,21 @@ pub async fn main(argv: Vec<String>) -> i32 {
     };
 
     match args.cmd.as_str() {
+        "direct" => {
+            // the model alone, no harness: the baseline every harness is compared against
+            let task = args.positional.join(" ");
+            if task.trim().is_empty() {
+                eprintln!("usage: fh direct \"<task>\" [--cwd dir] [--commit]");
+                return 2;
+            }
+            let r = crate::direct::run_direct(&cfg, &env, &cwd, task.trim(), args.has("commit")).await;
+            println!("{}", serde_json::to_string_pretty(&r).unwrap());
+            return match r["verdict"].as_str() {
+                Some("applied") => 0,
+                Some("failed") => 1,
+                _ => 1,
+            };
+        }
         "doctor" => {
             doctor(&cfg, &env).await;
             return 0;

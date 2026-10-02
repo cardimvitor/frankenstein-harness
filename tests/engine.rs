@@ -298,3 +298,128 @@ async fn eval_corpus_fails_before_and_run_one_solves_a_task_through_the_engine()
     let _ = PathBuf::new();
     let _ = Subtask { id: String::new(), goal: String::new(), files: vec![], deps: vec![] };
 }
+
+#[tokio::test]
+async fn memory_off_still_learns_but_never_puts_learned_skills_in_the_prompt() {
+    let m = testkit::start(0, None).await;
+    let body = "- Keep loop bounds inclusive when the API contract says inclusive.\n- Add a boundary test for equal endpoints.\n- Prefer widening the range end over adjusting the start.";
+    m.set_fallback(brain("in range(a, b)", Some(json!({"create": true, "name": "Inclusive ranges", "summary": "range helpers are inclusive", "keywords": ["range", "sum", "inclusive", "loop"], "body": body}))));
+    let (d, _) = fixture("py-off-by-one");
+    let store = SkillStore::in_memory();
+    let mut c = cfg_for(&m);
+    c.memory = "off".into();
+    let engine = Engine::new(c, Env::new(), headless(Default::default()), d.path(), store.clone());
+    let r = engine.run_task("fix sum_range", TaskOptions { auto: true, approval: Mode::Yolo, ..Default::default() }).await;
+    engine.drain(10_000).await;
+    assert_eq!(r.verdict, "pass");
+    // it still learns: the skill exists in the store
+    assert!(store.activity(20).iter().any(|a| a.kind == "created" && a.skill == "Inclusive ranges"));
+    assert!(Command::new("sh").arg("-c").arg("git checkout -q -- . && git clean -fdq").current_dir(d.path()).status().unwrap().success());
+    m.clear_requests();
+    let r2 = engine.run_task("fix the sum_range inclusive loop", auto()).await;
+    // ... but does not use it
+    assert!(!r2.skills_used.contains(&"Inclusive ranges".to_string()), "{:?}", r2.skills_used);
+    assert!(r2.skills_withheld.contains(&"Inclusive ranges".to_string()), "{:?}", r2.skills_withheld);
+    let agent_req = m.requests().into_iter().find(|q| q.get("response_format").is_none()).unwrap();
+    assert!(!agent_req["messages"].to_string().contains("Keep loop bounds inclusive"));
+    assert_eq!(r2.to_json()["skillsWithheld"][0], "Inclusive ranges");
+    assert_eq!(store.user_skills(None).len(), 1);
+}
+
+fn scout_brain(inner: impl Fn(&Value) -> Scripted + Send + Sync + 'static) -> impl Fn(&Value) -> Scripted + Send + Sync + 'static {
+    move |req| {
+        let msgs = req["messages"].as_array().cloned().unwrap_or_default();
+        let user = msgs.iter().find(|x| x["role"] == "user").and_then(|x| x["content"].as_str()).unwrap_or("").to_string();
+        if req.get("response_format").is_none() && user.contains("parallel read-only scouts") {
+            // a scout first tries to edit (must be refused: plan mode), then reports
+            if msgs.last().map(|x| x["role"] == "tool").unwrap_or(false) {
+                return Scripted::text("Findings: the loop bound in mathx.py excludes b. Proposed solution: use range(a, b + 1).");
+            }
+            return Scripted::call("edit", json!({"path": "mathx.py", "old_text": "in range(a, b)", "new_text": "in range(a, b + 2)"}));
+        }
+        inner(req)
+    }
+}
+
+#[tokio::test]
+async fn max_parallel_scouts_are_read_only_and_one_agent_consolidates_their_findings() {
+    let m = testkit::start(0, None).await;
+    m.set_fallback(scout_brain(brain("in range(a, b)", None)));
+    let (d, _) = fixture("py-off-by-one");
+    let mut c = cfg_for(&m);
+    c.max_concurrency = 3;
+    c.consolidate = true;
+    let log = Arc::new(Mutex::new(vec![]));
+    let r = run(&m, d.path(), c, headless(log.clone()), SkillStore::in_memory(), "fix sum_range", auto()).await;
+    assert_eq!(r.verdict, "pass", "{}", r.reason);
+    assert_eq!((r.scouts, r.consolidated), (3, true));
+    assert_eq!(r.to_json()["consolidation"]["scouts"], 3);
+    // the scouts could not edit: the wrong edit (b + 2) never reached the file, the right one did
+    let src = std::fs::read_to_string(d.path().join("mathx.py")).unwrap();
+    assert!(src.contains("b + 1") && !src.contains("b + 2"), "{src}");
+    let reqs = m.requests();
+    assert!(reqs.iter().any(|q| q["messages"].to_string().contains("plan mode is read-only")), "a scout's edit must be refused");
+    // the single consolidating agent received all three reports
+    let main = reqs.iter().find(|q| q.get("response_format").is_none() && q["messages"].to_string().contains("Parallel read-only scouts already investigated")).expect("consolidating agent request");
+    let t = main["messages"].to_string();
+    for focus in ["Locate (scout 1)", "Tests (scout 2)", "Impact (scout 3)"] {
+        assert!(t.contains(focus), "{focus} missing");
+    }
+    assert!(!t.contains("Solution (scout 4)"));
+    assert!(log.lock().unwrap().iter().any(|l| l.contains("scouting in parallel")));
+}
+
+#[tokio::test]
+async fn max_parallel_workers_are_followed_by_one_consolidating_agent() {
+    let (d, _) = fixture("py-two-modules");
+    let m = testkit::start(0, None).await;
+    m.set_fallback(|req| {
+        let p = &req["response_format"]["json_schema"]["schema"]["properties"];
+        if p.get("trivial").is_some() {
+            return Scripted::json(json!({"trivial": false, "questions": [], "enriched": "implement both", "acceptance": ["tests pass"],
+                "plan": [{"step": "a", "files": ["server/validate.py"]}, {"step": "b", "files": ["client/format.py"]}], "assumptions": [],
+                "subtasks": [{"id": "server", "goal": "implement is_email in server/validate.py", "files": ["server/**"], "deps": []}, {"id": "client", "goal": "implement format_cents in client/format.py", "files": ["client/**"], "deps": []}]}));
+        }
+        if p.get("verdict").is_some() {
+            return Scripted::json(json!({"verdict": "pass", "findings": []}));
+        }
+        let msgs = req["messages"].as_array().unwrap();
+        let user = msgs.iter().find(|x| x["role"] == "user").unwrap()["content"].as_str().unwrap().to_string();
+        if msgs.last().unwrap()["role"] == "tool" {
+            return Scripted::text(if user.contains("consolidating agent") { "Consolidated: both parts agree." } else { "done" });
+        }
+        if user.contains("consolidating agent") {
+            return Scripted::call("read_file", json!({"path": "server/validate.py"}));
+        }
+        if user.contains("(server)") {
+            return Scripted::call("edit", json!({"path": "server/validate.py", "old_text": "raise NotImplementedError", "new_text": "return isinstance(s, str) and s.count('@') == 1 and ' ' not in s and s.split('@')[0] != '' and '.' in s.split('@')[1]"}));
+        }
+        if user.contains("(client)") {
+            return Scripted::call("edit", json!({"path": "client/format.py", "old_text": "raise NotImplementedError", "new_text": "return '${:,.2f}'.format(n / 100)"}));
+        }
+        Scripted::text("noop")
+    });
+    let mut c = cfg_for(&m);
+    c.max_concurrency = 2;
+    c.consolidate = true;
+    let r = run(&m, d.path(), c, headless(Default::default()), SkillStore::in_memory(), "two changes", auto()).await;
+    assert_eq!(r.verdict, "pass", "{}", r.reason);
+    assert_eq!((r.workers.len(), r.consolidated), (2, true));
+    assert!(r.final_text.contains("Consolidated: both parts agree."), "{}", r.final_text);
+    let cons: Vec<Value> = m.requests().into_iter().filter(|q| q["messages"].to_string().contains("You are the consolidating agent")).collect();
+    assert!(!cons.is_empty());
+    let t = cons[0]["messages"].to_string();
+    assert!(t.contains("server") && t.contains("client") && t.contains("Worker reports"));
+}
+
+#[tokio::test]
+async fn consolidation_is_off_unless_asked_for() {
+    let m = testkit::start(0, None).await;
+    m.set_fallback(scout_brain(brain("in range(a, b)", None)));
+    let (d, _) = fixture("py-off-by-one");
+    let mut c = cfg_for(&m);
+    c.max_concurrency = 3; // many workers allowed, consolidate left at its default (false)
+    let r = run(&m, d.path(), c, headless(Default::default()), SkillStore::in_memory(), "fix sum_range", auto()).await;
+    assert_eq!((r.scouts, r.consolidated), (0, false));
+    assert!(!m.requests().iter().any(|q| q["messages"].to_string().contains("parallel read-only scouts")));
+}

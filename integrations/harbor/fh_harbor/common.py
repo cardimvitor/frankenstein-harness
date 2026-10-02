@@ -29,22 +29,22 @@ def endpoint_host(endpoint: str) -> str | None:
     return urlparse(endpoint).hostname
 
 
-def run_command(instruction: str, *, logs_dir: str, max_concurrency: int | None, commit: bool, extra_flags: str = "") -> str:
+def run_command(instruction: str, *, logs_dir: str, max_concurrency: int | None, commit: bool, extra_flags: str = "", direct: bool = False) -> str:
     """The shell command that runs one fh task inside the task container.
 
     The task's own working directory (the image WORKDIR) is the workspace. fh needs git for checkpoints:
     a directory that is not a repository is left alone (fh still works, without rollback).
     """
-    flags = "--auto --yes --mode yolo --json"
-    if commit:
-        flags += " --commit"
+    # direct = the model alone (no agent loop, tools, verification or skills): the no-harness baseline
+    sub = "direct" if direct else "run"
+    flags = "--commit" if direct and commit else ("" if direct else "--auto --yes --mode yolo --json" + (" --commit" if commit else ""))
     if extra_flags:
         flags += " " + extra_flags
     conc = f"FH_MAX_CONCURRENCY={int(max_concurrency)} " if max_concurrency else ""
     result = logs_dir + "/" + RESULT_FILE
     return (
         f"mkdir -p {shlex.quote(logs_dir)} && "
-        f"{conc}{FH_BIN} run {flags} {shlex.quote(instruction)} "
+        f"{conc}{FH_BIN} {sub} {flags} {shlex.quote(instruction)} "
         f"> {shlex.quote(logs_dir + '/' + RESULT_FILE)} 2> {shlex.quote(logs_dir + '/' + LOG_FILE)}; "
         "code=$?; "
         # 0 (pass), 1 (verification failed) and 3 (unverified) are task outcomes: the benchmark's verifier decides.

@@ -180,3 +180,14 @@ class SyncCli(unittest.TestCase):
             self.assertEqual(count(shared / "skills.db", "tasks"), 2)
             self.assertEqual(os.stat(shared).st_mode & 0o2770, 0o2770)
             self.assertEqual(os.stat(shared / "skills.db").st_mode & 0o660, 0o660)
+
+
+class Modes(unittest.TestCase):
+    def test_direct_runs_the_model_alone_and_run_keeps_the_harness_flags(self):
+        d = common.run_command("fix 'it'", logs_dir="/logs/agent", max_concurrency=None, commit=True, direct=True)
+        self.assertIn(f"{common.FH_BIN} direct --commit 'fix '\"'\"'it'\"'\"''", d)
+        self.assertNotIn("--auto", d)
+        r = common.run_command("fix", logs_dir="/logs/agent", max_concurrency=16, commit=False)
+        self.assertIn("FH_MAX_CONCURRENCY=16", r)
+        self.assertIn(f"{common.FH_BIN} run --auto --yes --mode yolo --json fix", r)
+        self.assertNotIn("--commit", r)

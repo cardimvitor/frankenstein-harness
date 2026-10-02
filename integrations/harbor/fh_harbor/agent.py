@@ -43,6 +43,9 @@ class FhOptions(InstalledAgentOptions):
     max_concurrency: int | None = Field(default=None, description="fh worker limit; 1 = single agent (FH_MAX_CONCURRENCY).")
     commit: bool = Field(default=False, description="Commit the verified result with git.")
     state_dir: str | None = Field(default=None, description="Host directory for learned skills shared across trials.")
+    memory: str | None = Field(default=None, description='"off": still create and improve skills but never use learned ones (FH_MEMORY).')
+    consolidate: bool = Field(default=False, description="Max-parallel mode: scouts/workers, then one agent consolidates (needs max_concurrency > 1).")
+    mode: str = Field(default="run", description='"run" = the full fh harness; "direct" = the model alone, no harness (baseline).')
 
 
 class FrankensteinHarness(BaseInstalledAgent):
@@ -94,6 +97,11 @@ class FrankensteinHarness(BaseInstalledAgent):
         cw = common.setting(self._opt("context_window"), "FH_CONTEXT_WINDOW")
         if cw:
             env["FH_CONTEXT_WINDOW"] = str(cw)
+        mem = common.setting(self._opt("memory"), "FH_MEMORY")
+        if mem:
+            env["FH_MEMORY"] = mem
+        if self._opt("consolidate"):
+            env["FH_CONSOLIDATE"] = "1"
         return env
 
     @override
@@ -128,12 +136,12 @@ class FrankensteinHarness(BaseInstalledAgent):
         try:
             await self.exec_as_agent(
                 environment,
-                command=common.run_command(instruction, logs_dir=logs, max_concurrency=int(max_conc) if max_conc else None, commit=commit),
+                command=common.run_command(instruction, logs_dir=logs, max_concurrency=int(max_conc) if max_conc else None, commit=commit, direct=self._opt("mode") == "direct"),
                 env=env,
             )
         finally:
             state_dir = common.setting(self._opt("state_dir"), "FH_STATE_DIR")
-            if state_dir:
+            if state_dir and self._opt("mode") != "direct":
                 with tempfile.TemporaryDirectory(prefix="fh-state-") as tmp:
                     out = Path(tmp) / "skills.db"
                     try:
@@ -163,6 +171,9 @@ class FrankensteinHarness(BaseInstalledAgent):
             "requests": llm.get("requests"),
             "toolCalls": llm.get("toolCalls"),
             "skillsUsed": r.get("skillsUsed"),
+            "skillsWithheld": r.get("skillsWithheld"),
+            "consolidation": r.get("consolidation"),
+            "direct": r.get("direct"),
             "timings": r.get("timings"),
         }
         context.metadata = meta

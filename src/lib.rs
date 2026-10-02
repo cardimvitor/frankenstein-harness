@@ -22,3 +22,4 @@ pub mod trust;
 pub mod hooks;
 pub mod http;
 pub mod mcp;
+pub mod direct;
