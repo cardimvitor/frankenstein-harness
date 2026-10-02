@@ -8,7 +8,7 @@ Esta versão substitui a primeira (`docs/VALIDACAO_JG_ENG_TESTS.md`) e incorpora
 1. **Só vale o resultado final.** Se o `fh` errou duas vezes e acertou na terceira, antes de entregar, conta como certo, sem penalidade. Tentativas intermediárias, rodadas de verificação e autocorreções são o processo interno do harness e não entram na nota nem no relatório como erro. Corrija o que ele deixar no disco ao terminar, sem `--keep`. Se ele desfizer a própria mudança, a entrega é o estado original. O mesmo vale para todas as configurações.
 2. **O `fh` aprende, e a memória é medida em três configurações.** `fh-nomem` cria e melhora skills mas **não as usa**; `fh-mem1` cria, melhora e usa, com um agente por tarefa; `fh-memmax` cria, melhora e usa, com paralelização máxima dentro de cada tarefa e um agente que consolida tudo (seção 5.1). Cada configuração tem a sua própria memória, vazia no início; nenhuma passa memória para outra.
 3. **Resolver antes de rodar e verificar.** Tudo que pode quebrar por ambiente ou configuração é resolvido e verificado antes da execução que conta. A falha de verificação do `fh` que a primeira versão apontava (não conhecer `scripts/test.sh`) já foi corrigida no próprio `fh` (seção 5.1).
-4. **Concorrência na primeira rodada.** Nada de ir direto a 20. O número **total** de tarefas simultâneas, somando todas as configurações que rodam juntas, sobe até 5; depois valida, degrau a degrau, se chega a 10 sem prejudicar o desempenho, e só sobe um degrau depois de confirmar que o anterior aguentou (seção 5.0a).
+4. **Concorrência em degraus de 5 em 5.** O número **total** de tarefas simultâneas, somando todas as configurações que rodam juntas, começa em 5 e sobe de 5 em 5 (5, 10, 15, 20, ...). Só sobe um degrau depois de confirmar que o anterior aguentou, e **para** no primeiro degrau em que o tok/s total do servidor cai em relação ao degrau anterior, ou em que o tok/s por tarefa fica abaixo de 30 (o mínimo). O último degrau bom vira o teto N_MAX (seção 5.0a).
 5. **Teste final de capacidade, só do `fh`.** Ao final de tudo, com a máquina só para ele, começa com 20 sessões simultâneas e vai aumentando até onde o servidor aguenta. Mede o tok/s de cada atividade para calcular o tok/s médio por usuário e descobre a capacidade máxima em uso extremo, com outras técnicas de carga além da carga real (seção 9).
 6. **Quem julga a assertividade final é a LLM que conduz os testes, não o Qwen.** O juiz é você, a LLM operadora que está executando este prompt. O Frankenstein V2 (Qwen) aparece só como o modelo avaliado, dentro das configurações. Nada do que ele diz sobre o próprio trabalho entra na nota: nem o veredito interno do `fh`, nem o revisor LLM do `fh`, nem o "terminei, todos os testes passam" de qualquer configuração. Esses sinais não entram no relatório como métrica. Detalhes na seção 5.0b.
 7. **Todas as configurações rodam em paralelo, isoladas, com o `fh` na frente.** Cada configuração roda no seu contêiner, com o seu estado, a sua chave de API e a sua cota (seção 5.0). O `fh` vem primeiro onde a ordem importa: as três configurações do `fh` entram primeiro na fila de tarefas e aparecem primeiro em todo relatório; só depois vêm o modelo direto e os outros harnesses.
@@ -26,13 +26,13 @@ Nomes usados aqui: **Frankenstein V2** é o modelo (Qwen3.8-27B NVFP4 + MTP=3 no
 - GPU: uma RTX PRO 6000 Blackwell 96 GB (SM120), inteira para a avaliação (decisão 9). Modelo fixo: `nvidia/Qwen3.8-27B-NVFP4`, MTP 3 (seção 2.0)
 - WORKDIR: `<ex.: /workspace/harness-eval>` (precisa de ~250 GB livres: as oito configurações têm cópias próprias de cada exercício e de cada tarefa, mais ~30 GB para o checkpoint NVFP4 e as imagens dos benchmarks)
 - FRANKENSTEIN_HARNESS: repositório https://github.com/cardimvitor/frankenstein-harness, branch `ccr-3bc51f62-prkdq0`. Compilar com `cargo build --release` e usar `target/release/fh`. Registre o commit.
-- TAREFAS_SIMULTANEAS_TOTAIS (G): rampa gradual 2 → 3 → 4 → 5; depois 6 → 7 → 8 → 9 → 10, um degrau por vez e só se o anterior não prejudicou o desempenho. É o total de tarefas rodando ao mesmo tempo somando as oito configurações; o teto sai da calibração e vale no máximo 10 nesta rodada (seção 5.0a)
+- TAREFAS_SIMULTANEAS_TOTAIS (G): rampa de 5 em 5 (5, 10, 15, 20, ...), até o tok/s total cair ou o tok/s por tarefa ficar abaixo de 30. É o total de tarefas rodando ao mesmo tempo somando as oito configurações; o teto N_MAX sai da calibração (seção 5.0a)
 - TIMEOUT_POR_EXERCICIO: 900 s de parede, contando do início da configuração até o processo terminar
 - REPETICOES: 1 (3 se houver tempo, só para as 2 melhores configurações)
 - AMOSTRAGEM: temperatura 1,0, top_p 0,95, top_k 20, igual para todos e imposta pelo proxy (seção 3)
 - EXECUTAR_ATE: fase `<0 a 8>` (a 7 são os benchmarks públicos; a 8, o teste de capacidade do `fh`, sempre por último)
 
-Estimativa de tempo, para planejar: o jg-eng-tests tem 8 configurações × 130 exercícios = 1 040 execuções. Com G = 10 e uma execução média de 8 minutos, são ~14 h; no pior caso (tudo estourando os 900 s), ~26 h. Some a calibração (~2 h), o passe de tempo (~3 h) e o teste de capacidade (~4–8 h). Os benchmarks públicos (fase 7) são bem mais longos (tarefas de horas no DeepSWE, até 20 h no FrontierSWE): planeje dias, use um subconjunto fixo se precisar e retome pelo `state.json`. A sessão precisa conseguir retomar sem refazer o que já terminou (seção 5.0).
+Estimativa de tempo, para planejar: o jg-eng-tests tem 8 configurações × 130 exercícios = 1 040 execuções. Com uma execução média de 8 minutos são ~14 h se a rampa parar em G = 10 e ~7 h se chegar a G = 20; no pior caso (tudo estourando os 900 s), ~26 h e ~13 h. Some a calibração (~2 h), o passe de tempo (~3 h) e o teste de capacidade (~4–8 h). Os benchmarks públicos (fase 7) são bem mais longos (tarefas de horas no DeepSWE, até 20 h no FrontierSWE): planeje dias, use um subconjunto fixo se precisar e retome pelo `state.json`. A sessão precisa conseguir retomar sem refazer o que já terminou (seção 5.0).
 
 ## 0. Regras que valem a sessão inteira
 1. As configurações avaliadas só veem a pasta `exercise/` de cada desafio. Nunca `solution/`, `grader/`, `EVALUATION.md`, o `.git` do jg-eng-tests, as pastas de outros exercícios ou resultados de outras configurações. A única exceção é a memória interna do próprio `fh` (decisão 2): o que ele aprendeu sozinho nos exercícios anteriores da **sua** configuração, nunca a nota do grader. Você (operador) nunca resolve exercício, nunca dá dica e nunca cola conteúdo do grader em prompt.
@@ -146,7 +146,7 @@ Notas:
 - `max-model-len`: 131072 se couber na GPU; mínimo 65536. Na rodada anterior, 32768 estourou num exercício, e Claude Code e OpenCode têm prompt de sistema grande. Registre o valor usado e use o mesmo valor em `FH_CONTEXT_WINDOW` (seção 5.1).
 - Se o servidor travar ao iniciar com MTP no Blackwell (SM120), aplique a correção que resolveu antes: `--quantization modelopt_fp4 --block-size 128` com `VLLM_HAS_FLASHINFER_CUBIN=1`. Registre qual foi usado.
 - Confira cada flag com `vllm serve --help` da versão instalada; não use sintaxe de memória. Se `--override-generation-config` não existir, use o equivalente da versão e registre. De qualquer forma, o proxy impõe a amostragem (seção 3), porque os harnesses mandam os próprios valores por requisição e o padrão do servidor não os sobrescreve.
-- `max-num-seqs`: 16 foi validado na PRO 5000, mas com até 10 tarefas simultâneas no total (mais as requisições extras do `fh-memmax`, que abre scouts e workers dentro de cada tarefa), 16 vira fila na hora. Suba para 64 na PRO 6000 de 96 GB. Na calibração (seção 5.0a), confira no `/metrics` se o uso de KV cache passa de 95% ou se há preempções. Se passar, reduza para 48 ou 32 e registre. Uma vez escolhido, o valor é fixo para todos os harnesses.
+- `max-num-seqs`: 16 foi validado na PRO 5000, mas com a rampa de 5 em 5 (que pode passar de 20 tarefas simultâneas, mais as requisições extras do `fh-memmax`, que abre scouts e workers dentro de cada tarefa), 16 vira fila na hora. Suba para 64 na PRO 6000 de 96 GB. Na calibração (seção 5.0a), confira no `/metrics` se o uso de KV cache passa de 95% ou se há preempções. Se passar, reduza para 48 ou 32 e registre. Uma vez escolhido, o valor é fixo para todas as configurações. Se a rampa parar porque o servidor encheu (fila sustentada em `num_requests_waiting` com `max-num-seqs` cheio), registre: o limite foi do servidor e não da GPU; subir `max-num-seqs` seria uma variante com nome próprio.
 - Com MTP, o ganho da especulação cai quando o lote cresce: a GPU deixa de estar ociosa entre tokens. É por isso que a rampa mede tok/s e aceitação a cada degrau. Se a calibração mostrar que acima de certo N o MTP piora o agregado, registre como achado. Não desligue o MTP na comparação principal; isso é testado como variante na fase 8.
 - Reinício "limpo" = matar o processo, esperar a VRAM voltar ao repouso no `nvidia-smi`, subir de novo e esperar `GET /v1/models` responder. O cache de prefixo morre com o processo; não é preciso mais nada.
 - Teste de fumaça, a cada reinício (uma vez por fase) e antes de liberar as configurações:
@@ -262,15 +262,26 @@ A revisão é **cega**: um script do operador renomeia as entregas para códigos
 
 **Só o resultado final conta (decisão 1).** O que o harness diz sobre si, as tentativas intermediárias e quantas rodadas ele precisou não entram no julgamento nem no relatório como acerto ou erro. Quem errou duas vezes e acertou na terceira está certo. Tempo e tokens gastos continuam sendo medidos como custo (seção 6).
 
-### 5.0a Orçamento global de tarefas simultâneas (G): rampa gradual até 10
-O objetivo é terminar o conjunto mais rápido, com várias tarefas ao mesmo tempo, sem estragar nem o desempenho nem a comparação. G é o **total** de tarefas rodando ao mesmo tempo, somando as oito configurações. Nesta rodada o teto é 10; o uso extremo fica para a fase 8.
+### 5.0a Orçamento global de tarefas simultâneas (G): rampa de 5 em 5
+O objetivo é terminar o conjunto mais rápido, com várias tarefas ao mesmo tempo, sem estragar nem o desempenho nem a comparação. G é o **total** de tarefas rodando ao mesmo tempo, somando as oito configurações. O uso extremo (muito além do ponto de parada da rampa) fica para a fase 8.
+
+**Duas medidas decidem a rampa**, calculadas no proxy sobre a janela de cada degrau:
+- **tok/s total** = tokens de saída de todas as requisições ÷ tempo da janela (a vazão do servidor);
+- **tok/s por tarefa** = tok/s de geração de cada requisição, tokens de saída ÷ (duração − TTFT), **mediana** entre as requisições da janela (o que um agente vê enquanto o modelo gera). Registre também o P10 e o tok/s efetivo por tarefa (total ÷ G), que inclui o tempo em que a tarefa está rodando ferramentas e não gerando.
+
+**A regra.** Os degraus são G = 5, 10, 15, 20, 25, 30, ... Passe ao degrau seguinte se, no degrau atual:
+1. o tok/s total **não caiu** em relação ao degrau anterior; e
+2. o tok/s por tarefa (mediana) **continua em 30 ou mais**.
+
+**Pare** no primeiro degrau em que uma das duas falha, e N_MAX = o degrau anterior. Se o tok/s total cair menos de 3%, repita esse degrau mais uma vez e use a média das duas janelas, para o ruído não parar a rampa à toa. No primeiro degrau (G = 5) só vale o mínimo de 30 tok/s por tarefa. Registre qual das duas condições parou a rampa.
+
+**Freios de segurança** (valem junto, por proteção; não são a regra de desempenho): erro 5xx, falta de memória, preempção, ou KV cache acima de 95% de forma sustentada. Qualquer um deles rejeita o degrau, e N_MAX = o degrau anterior. Há também um **teto duro**, para a rampa não correr sem limite: o menor entre o `max-num-seqs` do servidor, os núcleos livres do host ÷ as CPUs de cada tarefa, e 60.
 
 **1. Calibração (uma vez, antes de tudo, fora da comparação).**
-- Servidor recém-iniciado, com `fh-mem1` sozinho nos primeiros 60 exercícios do catálogo. Essas execuções não contam, e a memória do `fh` usada aqui é descartada.
-- Degraus de G: 1 (linha de base), 2, 3, 4, 5, 6, 7, 8, 9, 10. Cada degrau dura pelo menos 8 minutos ou 5 exercícios concluídos, o que vier por último. Uma tarefa nova só entra quando outra termina, para manter G constante.
+- Servidor recém-iniciado, com `fh-mem1` sozinho nos primeiros exercícios do catálogo (os que forem necessários; as execuções não contam, e a memória do `fh` usada aqui é descartada).
+- Degraus: G = 1 (referência: velocidade de um fluxo sozinho, que serve de comparação), depois 5, 10, 15, ... pela regra acima. Cada degrau dura pelo menos 10 minutos de carga constante **e** pelo menos G tarefas concluídas, o que vier por último (no máximo 30 minutos). Uma tarefa nova só entra quando outra termina, para manter G constante.
 - No fim de cada degrau, imprima e grave em `WORKDIR/calibracao.csv`:
-  - tok/s de saída por fluxo: mediana e P10;
-  - tok/s agregado: saída total ÷ tempo do degrau;
+  - tok/s total, e tok/s por tarefa (mediana, P10 e efetivo);
   - requisições rodando e em fila, média e pico;
   - uso de KV cache, média e pico, e preempções;
   - TTFT P50 e P90;
@@ -278,25 +289,16 @@ O objetivo é terminar o conjunto mais rápido, com várias tarefas ao mesmo tem
   - uso de CPU e RAM do host (builds de .NET e Node em paralelo competem por CPU);
   - potência média da GPU;
   - erros e timeouts.
-- **De 1 a 5:** sobe um degrau de cada vez. Só para antes de 5 se aparecer erro 5xx, falta de memória, preempção ou KV cache acima de 95%.
-- **De 5 a 10** ("chega a 10 sem prejudicar o desempenho?"): só suba para G+1 se, no degrau G, valerem **todas** estas condições em relação ao degrau 1:
-  - o tok/s mediano por fluxo continua ≥ 70% do valor do degrau 1;
-  - o TTFT P90 não passou de 2× o do degrau 1 nem de 15 s;
-  - o KV cache ficou abaixo de 90%, sem preempções;
-  - a CPU do host ficou abaixo de 90% em média (senão o gargalo são os builds, e mais paralelismo não ajuda);
-  - nenhum erro 5xx, falta de memória ou timeout de exercício a mais do que no degrau 1.
-
-  O primeiro degrau que violar uma condição é descartado, e N_MAX = o último degrau que cumpriu todas. Se todos cumprirem, N_MAX = 10.
-- Registre a decisão com os números: tabela e gráfico de tok/s por fluxo e agregado contra G, marcando o degrau que parou a rampa e o motivo.
-- **Checagem de mistura.** Depois da calibração, rode as oito configurações juntas com G = 5 por 15 minutos (descartada). Ela valida o proxy, as cotas e o isolamento sob a mistura real. Se algum critério de parada aparecer, reduza o teto N_MAX.
+- Registre a decisão com os números: tabela e gráfico de tok/s total e por tarefa contra G, marcando o degrau que parou a rampa e o motivo.
+- **Checagem de mistura.** Depois da calibração, rode as oito configurações juntas com G = 5 por 15 minutos (descartada). Ela valida o proxy, as cotas e o isolamento sob a mistura real. Se algum freio de segurança aparecer, reduza N_MAX.
 
 **2. Escalonamento na execução principal.**
 - **Fila justa, com o `fh` na frente.** A fila gira pelas configurações na ordem da tabela (`fh-nomem`, `fh-mem1`, `fh-memmax`, `modelo-direto`, `opencode`, `qwen-code`, `claude-code`, `deepseek`). Quando uma vaga abre, ela vai para a próxima configuração da rotação que tenha tarefa pendente e esteja abaixo do seu limite. O limite de cada configuração é `max(1, ceil(G ÷ nº de configurações ativas))`; com G = 5 e oito configurações, as cinco primeiras da rotação rodam e as outras esperam a vez, e o rodízio faz todas avançarem juntas.
-- **G começa em 5** (decisão 4) e sobe de 1 em 1, até N_MAX, a cada 40 tarefas concluídas no total, se todas as condições da calibração continuarem valendo medidas na janela recente (15 min) e comparadas com o degrau 1 da calibração. Se uma deixar de valer, G volta ao degrau anterior.
+- **G começa em 5** (decisão 4) e sobe de 5 em 5, até o N_MAX da calibração, aplicando a mesma regra sobre a mistura real: cada degrau dura pelo menos 15 minutos e pelo menos 2 × G tarefas concluídas, e é comparado com o degrau anterior (tok/s total) e com o mínimo de 30 (tok/s por tarefa). Quando uma condição falhar, G **volta ao degrau anterior e fica congelado** nele pelo resto da fase, sem oscilar; registre o horário e o motivo.
 - A cada degrau de G e depois a cada 10 tarefas concluídas, imprima a mesma linha de números da calibração, com o G atual, e grave-a em `WORKDIR/runs/<configuracao>/tps.csv` e em `WORKDIR/tps-global.csv`.
-- **Freio de segurança.** Se aparecer erro 5xx, falta de memória ou KV cache acima de 95% por mais de 2 minutos, pare de lançar tarefas novas até a fila esvaziar e continue no mesmo G. Nunca mude o servidor, e registre cada acionamento com o horário. Se o freio acionar três vezes, avise no relatório que N_MAX foi alto demais para a mistura.
+- **Freio de segurança na execução.** Se aparecer erro 5xx, falta de memória ou KV cache acima de 95% por mais de 2 minutos, pare de lançar tarefas novas até a fila esvaziar e continue no mesmo G. Nunca mude o servidor, e registre cada acionamento com o horário. Se o freio acionar três vezes, avise no relatório que o G ficou alto demais para a mistura.
 - O timeout continua 900 s de parede. Reporte a taxa de timeout por faixa de G.
-- As requisições extras do `fh-memmax` (scouts e workers) **não** contam em G: elas passam pela cota do proxy (seção 3 item 8) e a espera aparece como fila no relatório. Não reduza o `fh-memmax` por isso; a disputa pela GPU é o custo da paralelização.
+- As requisições extras do `fh-memmax` (scouts e workers) **não** contam em G: elas passam pela cota do proxy (seção 3 item 8) e a espera aparece como fila no relatório. Elas pesam nas duas medidas da regra (tok/s por tarefa inclui os fluxos dos scouts e workers). Não reduza o `fh-memmax` por isso; a disputa pela GPU é o custo da paralelização.
 
 ### 5.0c Passe de tempo: velocidade comparável (cada configuração sozinha)
 Como as configurações dividem a GPU na execução principal, o tempo, o TTFT e o tok/s dela ficam contaminados (regra 4). Para ter velocidade comparável:
@@ -409,7 +411,7 @@ Localize o repositório oficial e verifique se aceita endpoint OpenAI-compatíve
   - entrada, cache, entrada sem cache, saída e raciocínio (estimado);
   - total por exercício e por configuração (inclui scouts e workers do `fh-memmax`);
   - tokens por exercício aprovado, total e sem cache.
-- **Velocidade por degrau de G (1 a N_MAX):**
+- **Velocidade por degrau de G (de 5 em 5, até onde a rampa parou):**
   - tok/s por fluxo e agregado, fila, KV cache, TTFT, aceitação do MTP e potência, em cada degrau, para a mistura das oito configurações;
   - a curva de tok/s agregado contra G é o gráfico principal desta parte.
 - **Velocidade por configuração** (só do passe de tempo da seção 5.0c):
@@ -491,7 +493,7 @@ Objetivo: rodar dois benchmarks públicos de código com as oito configurações
 | FrontierSWE v2 | 34 | px-eval sobre o Harbor | `github.com/Proximal-Labs/frontier-swe-v2` | até 20 h por tarefa, várias exigem GPU |
 
 ### 8.0 Mecânica comum
-- **Uma invocação por configuração, todas ao mesmo tempo.** Cada configuração roda numa invocação própria do Harbor ou do Pier, com `-n` fixo igual a `max(1, floor(N_MAX ÷ 8))` (1 quando N_MAX ≤ 15; registre). Como os runners não se coordenam entre si, o total de tarefas simultâneas é a soma dos `-n` e nunca passa de N_MAX da seção 5.0a. Se N_MAX < 8, as configurações rodam em ondas de N_MAX invocações, com as do `fh` na primeira onda; a espera acontece **entre** configurações, nunca no meio de uma.
+- **Uma invocação por configuração, todas ao mesmo tempo.** Cada configuração roda numa invocação própria do Harbor ou do Pier, com `-n` fixo igual a `max(1, floor(N_MAX ÷ 8))` (por exemplo, N_MAX = 20 dá 2 por configuração; registre). Como os runners não se coordenam entre si, o total de tarefas simultâneas é a soma dos `-n` e nunca passa de N_MAX da seção 5.0a. Se N_MAX < 8, as configurações rodam em ondas de N_MAX invocações, com as do `fh` na primeira onda; a espera acontece **entre** configurações, nunca no meio de uma.
 - **Ordem (decisão 7).** Dentro de uma onda, e na lista dos relatórios, a ordem é a da tabela da seção 5: `fh-nomem`, `fh-mem1`, `fh-memmax`, `modelo-direto`, `opencode`, `qwen-code`, `claude-code`, `deepseek`. Entre benchmarks: DeepSWE v1.1 primeiro, FrontierSWE v2 por último (o mais longo). **Um vLLM novo por benchmark**, compartilhado pelas configurações que rodam juntas (regra 4).
 - **Mesmo conjunto de tarefas para todas.** Rode o benchmark inteiro. Se o tempo não der, escolha um subconjunto fixo com semente registrada (`--n-tasks N --sample-seed 0` no Pier, `-i/-x` ou `-l` no Harbor), decidido **antes** da primeira configuração. Todas rodam exatamente esse subconjunto.
 - **Timeouts.** Use os timeouts oficiais de cada benchmark, sem multiplicadores. Se for preciso encurtar, isso vira variante com nome próprio, fora da comparação.
