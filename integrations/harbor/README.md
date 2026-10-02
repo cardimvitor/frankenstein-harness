@@ -1,6 +1,6 @@
 # fh adapters for Harbor and Pier
 
-Run Frankenstein Harness (`fh`) on Harbor-format benchmarks (FrontierSWE v2, any Harbor dataset) and on Pier (DeepSWE v1.1). The full run plan, including the order (fh first, in both modes) and the per-benchmark caveats, is in `docs/VALIDACAO_JG_ENG_TESTS_V2.md`, section 8.
+Run Frankenstein Harness (`fh`) on Harbor-format benchmarks (any Harbor dataset) and on Pier (DeepSWE v1.1). The full run plan, including the order (fh first, in both modes) and the per-benchmark caveats, is in `docs/VALIDACAO_JG_ENG_TESTS_V2.md`, section 8.
 
 ## Build a static Linux fh
 
@@ -22,7 +22,7 @@ Y
 harbor run -d <dataset>@<versão> \
   --agent fh_harbor.agent:FrankensteinHarness -m openai/frankenstein-v2 \
   --ak binary=target/x86_64-unknown-linux-musl/release/fh \
-  --ak max_concurrency=1 --ak state_dir=$PWD/fh-state/frontier \
+  --ak max_concurrency=1 --ak state_dir=$PWD/fh-state/dataset \
   --ae FH_ENDPOINT=http://host.docker.internal:8001/v1 \
   --extra-docker-compose host-gateway.yaml --allow-agent-host host.docker.internal -n 4
 ```
