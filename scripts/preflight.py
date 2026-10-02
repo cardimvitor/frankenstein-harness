@@ -4,8 +4,8 @@
     python3 scripts/preflight.py --workdir /workspace/harness-eval [--min-disk-gb 300] [--json out.json]
 
 Prints PASS / WARN / FAIL per check and exits 1 if any check FAILs (abort), 0 otherwise. It only reads and probes:
-it never installs, kills or changes anything. The model repositories to probe come from the environment:
-FH_REPO_BIG, FH_REV_BIG, FH_REPO_SMALL_MTP, FH_REPO_SMALL_BASE (otherwise those probes are skipped with a WARN).
+it never installs, kills or changes anything. The model repositories probed default to Qwen3.8-27B-NVFP4 @dbb8f445, the MiMo-9B NVFP4+MTP build and the official MiMo-9B;
+override with FH_REPO_BIG, FH_REV_BIG, FH_REPO_SMALL_MTP, FH_REPO_SMALL_BASE.
 """
 from __future__ import annotations
 
@@ -20,6 +20,8 @@ import sys
 import urllib.request
 
 RESULTS: list[dict] = []
+DEFAULTS = {"FH_REPO_BIG": "nvidia/Qwen3.8-27B-NVFP4", "FH_REPO_SMALL_MTP": "ycui7/MiMo-V2.6-Distill-Qwen-9B-NVFP4-MTP", "FH_REPO_SMALL_BASE": "XiaomiMiMo/MiMo-V2.6-Distill-Qwen-9B"}
+DEFAULT_REV_BIG = "dbb8f445"
 
 
 def sh(cmd: str, timeout: int = 20) -> tuple[int, str]:
@@ -143,7 +145,7 @@ def toolchain() -> None:
         check(f"tool.{t}", "PASS" if shutil.which(t) else "WARN", shutil.which(t) or "missing (installed in phase 0)", fix)
     rc, out = sh("python3 -c 'import vllm,sys;print(vllm.__version__)' 2>&1 | tail -1")
     ok = rc == 0 and re.match(r"\d+\.\d+", out or "") and version_tuple(out) >= (0, 30)
-    check("vllm.version", "PASS" if ok else "WARN", out[:60] if out else "not installed", "vLLM >= 0.30 (the Small Frank NVFP4 card asks for it); installed in phase 0")
+    check("vllm.version", "PASS" if ok else "WARN", out[:60] if out else "not installed", "vLLM >= 0.30 (the MiMo-9B NVFP4 card asks for it); installed in phase 0")
 
 
 def network() -> None:
@@ -164,11 +166,11 @@ def network() -> None:
     probe("npm", "https://registry.npmjs.org/", "OpenCode, Qwen Code, Claude Code installers", fail_status="WARN")
     probe("registry", "https://registry-1.docker.io/v2/", "container images", fail_status="FAIL")
     for var, label in (("FH_REPO_BIG", "big"), ("FH_REPO_SMALL_MTP", "small_mtp"), ("FH_REPO_SMALL_BASE", "small_base")):
-        repo = os.environ.get(var)
+        repo = os.environ.get(var) or DEFAULTS[var]
         if not repo:
             check(f"model.{label}", "WARN", f"{var} not set: model repo not probed", f"export {var}=<org/name>")
             continue
-        rev = os.environ.get("FH_REV_BIG") if var == "FH_REPO_BIG" else None
+        rev = (os.environ.get("FH_REV_BIG") or DEFAULT_REV_BIG) if var == "FH_REPO_BIG" else None
         url = f"https://huggingface.co/api/models/{repo}" + (f"/revision/{rev}" if rev else "")
         try:
             with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "fh-preflight"}), timeout=20) as r:
