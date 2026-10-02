@@ -25,7 +25,7 @@ Usage:
   fh run \"<task>\" [options]   run one task
   fh serve [--port N]         local web UI (127.0.0.1 only)
   fh --version                print the version
-  fh delegate \"<task>\" [--no-harness]  Big Frank (27B) plans, a worker model (Small Frank, 9B) (FH_WORKER_ENDPOINT/FH_WORKER_MODEL) writes once, the main model verifies (full fh loop, or one no-tools request with --no-harness)
+  fh delegate \"<task>\" [--no-harness]  27B plans, a worker model (FH_WORKER_ENDPOINT/FH_WORKER_MODEL) writes once, the main model verifies (full fh loop, or one no-tools request with --no-harness)
   fh direct \"<task>\"        the model alone, no harness (one request, edits applied as written): the baseline
   fh doctor                   check endpoint, model, auth, metrics, sandbox
   fh validate-vllm [options]  measure MTP, prefix cache, tool calls, long context, concurrency
