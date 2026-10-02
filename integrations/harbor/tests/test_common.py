@@ -153,3 +153,30 @@ class SkillSync(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SyncCli(unittest.TestCase):
+    def test_snapshot_task_merge_roundtrip_leaves_shared_single_writer(self):
+        from fh_harbor import sync
+        with tempfile.TemporaryDirectory() as d:
+            shared = Path(d) / "shared"
+            # first task: nothing to snapshot yet
+            t1 = Path(d) / "tasks" / "ex1"
+            self.assertEqual(sync.main(["snapshot", "--from", str(shared), "--to", str(t1)]), 0)
+            self.assertFalse((t1 / "skills.db").exists())
+            make_db(t1 / "skills.db", skills=[("s1", "learned in ex1", 10)], tasks=["ex1"])
+            self.assertEqual(sync.main(["merge", "--into", str(shared), str(t1), "--shared"]), 0)
+            # second task starts from what the first learned and adds its own
+            t2 = Path(d) / "tasks" / "ex2"
+            sync.main(["snapshot", "--from", str(shared), "--to", str(t2)])
+            self.assertEqual(count(t2 / "skills.db", "skills"), 1)
+            c = sqlite3.connect(t2 / "skills.db")
+            c.execute("INSERT INTO skills VALUES ('s2','s2','global',NULL,NULL,NULL,'learned','t','','','b2',1,'h','active',1,30)")
+            c.execute("INSERT INTO tasks VALUES ('ex2','p','pass',1,2)")
+            c.commit()
+            c.close()
+            sync.main(["merge", "--into", str(shared), str(t2 / "skills.db")])
+            self.assertEqual(count(shared / "skills.db", "skills"), 2)
+            self.assertEqual(count(shared / "skills.db", "tasks"), 2)
+            self.assertEqual(os.stat(shared).st_mode & 0o2770, 0o2770)
+            self.assertEqual(os.stat(shared / "skills.db").st_mode & 0o660, 0o660)

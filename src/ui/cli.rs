@@ -479,12 +479,12 @@ pub async fn main(argv: Vec<String>) -> i32 {
         _ => {}
     }
 
-    let store = match SkillStore::open(&env) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("cannot open skill store: {e}");
-            return 1;
+    let store = {
+        let (s, note) = SkillStore::open_resilient(&env);
+        if let Some(n) = note {
+            eprintln!("warning: {n}");
         }
+        s
     };
     let io: Arc<dyn crate::engine::Io> = if args.has("yes") { Arc::new(TerminalIo::new(args.has("thinking"), true, env.clone())) } else { Arc::new(TerminalIo::new(args.has("thinking"), false, env.clone())) };
     let engine = Engine::new(cfg.clone(), env.clone(), io, cwd.clone(), store);
@@ -540,12 +540,12 @@ pub async fn main(argv: Vec<String>) -> i32 {
         }
         "tui" | "" if args.cmd == "tui" || (std::io::stdout().is_terminal() && std::io::stdin().is_terminal() && !args.has("plain")) => {
             drop(engine);
-            let store = match SkillStore::open(&env) {
-                Ok(s) => s,
-                Err(e) => {
-                    eprintln!("cannot open skill store: {e}");
-                    return 1;
+            let store = {
+                let (s, note) = SkillStore::open_resilient(&env);
+                if let Some(n) = note {
+                    eprintln!("warning: {n}");
                 }
+                s
             };
             crate::tui::run::run_tui(cfg.clone(), env.clone(), cwd.clone(), store, crate::tui::run::TuiOptions { approval, auto: args.has("auto"), sandbox: args.has("sandbox"), commit: args.has("commit") }).await
         }

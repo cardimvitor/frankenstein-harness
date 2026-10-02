@@ -62,3 +62,14 @@ These checks used the scripted mock model (`fh mock-server`), Docker, Harbor 0.2
 
 - **Harbor:** a real trial scored reward 1.0 from the official verifier, and 3 concurrent trials scored 1.0 each, with the shared skill store merging all of them.
 - **Pier:** the build-time install and the no-internet run worked, but the model call was refused by Squid because the endpoint was on a non-80/443 port. The full Pier path still has to be confirmed in a pilot on the real machine.
+
+## Sharing learned skills safely
+
+`state_dir` (Harbor and Pier adapters) already follows the safe pattern: every trial works on its own copy and the adapter merges it back under a file lock. For runs you orchestrate yourself (one container per exercise), use the same pattern:
+
+```bash
+python3 -m fh_harbor.sync snapshot --from fh-state/shared --to fh-state/tasks/ex1   # then run the task with FH_HOME=fh-state/tasks/ex1
+python3 -m fh_harbor.sync merge --into fh-state/shared fh-state/tasks/ex1           # when it ends
+```
+
+Do not let several users or containers write one SQLite file: the first writer's file mode (0640 by default) locks the others out. If you must share a directory anyway, run fh with `FH_SHARED_STORE=1` (group-writable files and a setgid directory, local disk only).

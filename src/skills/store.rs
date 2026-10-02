@@ -165,11 +165,72 @@ pub struct SkillStore {
     pub builtins: Arc<Vec<Skill>>,
 }
 
+/// `FH_SHARED_STORE=1`: several users (or containers with different uids) share one store directory.
+pub fn shared_store(env: &Env) -> bool {
+    env.get("FH_SHARED_STORE").map(|v| v == "1" || v.eq_ignore_ascii_case("true")).unwrap_or(false)
+}
+
+/// Makes the store directory and its database files group-readable/writable (setgid dir, so new files keep the group).
+/// SQLite gives the -wal and -shm files the mode of the main database file, so this is enough for WAL mode.
+#[cfg(unix)]
+pub fn share_permissions(dir: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let add = |p: &Path, bits: u32| {
+        if let Ok(m) = std::fs::metadata(p) {
+            let mode = m.permissions().mode() & 0o7777;
+            if mode & bits != bits {
+                let _ = std::fs::set_permissions(p, std::fs::Permissions::from_mode(mode | bits));
+            }
+        }
+    };
+    add(dir, 0o2770);
+    for f in ["skills.db", "skills.db-wal", "skills.db-shm"] {
+        add(&dir.join(f), 0o660);
+    }
+}
+
+#[cfg(not(unix))]
+pub fn share_permissions(_dir: &Path) {}
+
 impl SkillStore {
     pub fn open(env: &Env) -> Result<Self> {
         let dir = data_dir(env);
-        std::fs::create_dir_all(&dir)?;
-        Self::open_path(&dir.join("skills.db"))
+        let shared = shared_store(env);
+        // new files and directories get group write while the store is created (restored right after: the
+        // agent's shell commands must not inherit a looser umask)
+        #[cfg(unix)]
+        let old_umask = if shared { Some(unsafe { libc::umask(0o002) }) } else { None };
+        let opened = std::fs::create_dir_all(&dir).map_err(anyhow::Error::from).and_then(|_| Self::open_path(&dir.join("skills.db")));
+        #[cfg(unix)]
+        if let Some(m) = old_umask {
+            unsafe { libc::umask(m) };
+        }
+        if shared {
+            share_permissions(&dir);
+        }
+        opened
+    }
+
+    /// Opens the store, and when that is impossible (read-only file created by another user, no permission, bad
+    /// path) keeps the task alive: a private copy in the temp directory, or memory as a last resort. Learning from
+    /// such a run is not shared; the returned note says why and is meant to be shown to the user.
+    pub fn open_resilient(env: &Env) -> (Self, Option<String>) {
+        let err = match Self::open(env) {
+            Ok(s) => return (s, None),
+            Err(e) => e,
+        };
+        let shared = data_dir(env).join("skills.db");
+        let private = std::env::temp_dir().join(format!("fh-skills-{}", std::process::id()));
+        if std::fs::create_dir_all(&private).is_ok() {
+            let target = private.join("skills.db");
+            if shared.is_file() {
+                let _ = std::fs::copy(&shared, &target);
+            }
+            if let Ok(s) = Self::open_path(&target) {
+                return (s, Some(format!("skill store {} cannot be opened ({err}); using a private copy for this run, so what it learns is not shared (set FH_SHARED_STORE=1 and make the directory group-writable to share it)", shared.display())));
+            }
+        }
+        (Self::in_memory(), Some(format!("skill store {} cannot be opened ({err}); skills are kept in memory for this run only", shared.display())))
     }
 
     pub fn open_path(p: &Path) -> Result<Self> {

@@ -415,3 +415,49 @@ fn store_is_shared_by_concurrent_writers() {
     let n: i64 = s.conn().query_row("SELECT COUNT(*) FROM tasks", [], |r| r.get(0)).unwrap();
     assert_eq!(n, 400);
 }
+
+#[cfg(unix)]
+#[test]
+fn shared_store_is_group_writable_and_does_not_leak_a_looser_umask() {
+    use std::os::unix::fs::PermissionsExt;
+    let d = tempfile::tempdir().unwrap();
+    let dir = d.path().join("store");
+    let mut env = fh::config::Env::new();
+    env.insert("FH_HOME".into(), dir.to_string_lossy().to_string());
+    env.insert("FH_SHARED_STORE".into(), "1".into());
+    let before = unsafe { let m = libc::umask(0o022); libc::umask(m); m };
+    let s = fh::skills::store::SkillStore::open(&env).unwrap();
+    s.record_task("t1", "p", &[], "pass", 1);
+    drop(s);
+    let after = unsafe { let m = libc::umask(0o022); libc::umask(m); m };
+    assert_eq!(before, after, "the process umask must be restored");
+    let mode = |p: std::path::PathBuf| std::fs::metadata(p).unwrap().permissions().mode() & 0o7777;
+    assert_eq!(mode(dir.clone()) & 0o2770, 0o2770, "directory: setgid + group rwx");
+    assert_eq!(mode(dir.join("skills.db")) & 0o660, 0o660, "database: group rw");
+    for f in ["skills.db-wal", "skills.db-shm"] {
+        if dir.join(f).exists() {
+            assert_eq!(mode(dir.join(f)) & 0o660, 0o660, "{f}: group rw");
+        }
+    }
+}
+
+#[test]
+fn an_unopenable_store_never_stops_a_task() {
+    // the store directory cannot be created (its parent is a regular file): same effect for the user as a read-only file
+    let d = tempfile::tempdir().unwrap();
+    let blocker = d.path().join("blocker");
+    std::fs::write(&blocker, "x").unwrap();
+    let mut env = fh::config::Env::new();
+    env.insert("FH_HOME".into(), blocker.join("store").to_string_lossy().to_string());
+    assert!(fh::skills::store::SkillStore::open(&env).is_err());
+    let (s, note) = fh::skills::store::SkillStore::open_resilient(&env);
+    assert!(note.unwrap().contains("cannot be opened"));
+    s.record_task("t1", "p", &[], "pass", 1);
+    let n: i64 = s.conn().query_row("SELECT COUNT(*) FROM tasks", [], |r| r.get(0)).unwrap();
+    assert_eq!(n, 1, "the fallback store still works");
+    // a healthy store reports nothing
+    let ok = d.path().join("ok");
+    let mut env2 = fh::config::Env::new();
+    env2.insert("FH_HOME".into(), ok.to_string_lossy().to_string());
+    assert!(fh::skills::store::SkillStore::open_resilient(&env2).1.is_none());
+}

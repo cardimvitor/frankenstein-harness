@@ -41,3 +41,7 @@ Not covered: TLS (loopback only), multi-user access, and exposing the port throu
 ## Credentials
 
 Bearer token from the environment variable named by `apiKeyEnv` (default `FH_API_KEY`), or from the OS keychain (`fh auth`; Linux secret-tool, macOS Keychain, Windows Credential Manager via PowerShell, the last one unverified). Custom header and no-auth schemes are supported (`authScheme`). For mTLS set `clientCert` (+ `clientKey`, or one combined PEM) and optionally `caCert`; for OIDC/JWT set `authTokenCmd` to a command that prints a fresh access token (cached for `authTokenTtlSecs`, refreshed after a 401). Tokens obtained this way are redacted from logs and events like any secret. Secrets are never written to config, logs, reports or skills.
+
+## Shared skill store
+
+The skill store is one SQLite file under `FH_HOME`, private to the user by default. Several users writing the same file lock each other out (the first writer's mode wins), so for parallel runs give every task its own copy and merge it back with one owner (`python3 -m fh_harbor.sync`, see `integrations/harbor/README.md`). If a directory has to be shared, `FH_SHARED_STORE=1` makes it group-writable (setgid directory, group read/write files; local disk only). That lets every member of the group change the skills that are injected into the model's context, so share only among people you trust. A store that cannot be opened no longer stops a task: fh uses a private copy (or memory) for that run and prints why.

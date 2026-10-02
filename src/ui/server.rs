@@ -542,7 +542,13 @@ pub async fn start_web_server(cfg: Config, env: Env, cwd: PathBuf, o: ServeOptio
     let hub = Hub::new(env.clone());
     let store = match o.store {
         Some(s) => s,
-        None => SkillStore::open(&env)?,
+        None => {
+            let (s, note) = SkillStore::open_resilient(&env);
+            if let (Some(n), Some(l)) = (note, &o.log) {
+                l(&format!("warning: {n}"));
+            }
+            s
+        }
     };
     let app_cwd = cwd.clone();
     let engine = Arc::new(Engine::new(cfg.clone(), env, Arc::new(WebIo { hub: hub.clone() }), cwd, store));

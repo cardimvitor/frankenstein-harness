@@ -151,3 +151,16 @@ def merge(state_dir: Path, incoming: Path) -> int:
             return changed
         finally:
             c.close()
+
+
+def share(state_dir: Path) -> None:
+    """Group-readable/writable store (setgid directory), for the rare case where several users must write it directly."""
+    try:
+        state_dir.mkdir(parents=True, exist_ok=True)
+        os.chmod(state_dir, (os.stat(state_dir).st_mode & 0o7777) | 0o2770)
+        for name in ("skills.db", "skills.db-wal", "skills.db-shm"):
+            f = state_dir / name
+            if f.exists():
+                os.chmod(f, (os.stat(f).st_mode & 0o7777) | 0o660)
+    except OSError:
+        pass
