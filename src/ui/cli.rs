@@ -25,6 +25,7 @@ Usage:
   fh run \"<task>\" [options]   run one task
   fh serve [--port N]         local web UI (127.0.0.1 only)
   fh --version                print the version
+  fh delegate \"<task>\"      27B plans, a worker model (FH_WORKER_ENDPOINT/FH_WORKER_MODEL) writes once, the main model verifies
   fh direct \"<task>\"        the model alone, no harness (one request, edits applied as written): the baseline
   fh doctor                   check endpoint, model, auth, metrics, sandbox
   fh validate-vllm [options]  measure MTP, prefix cache, tool calls, long context, concurrency
@@ -58,7 +59,7 @@ Options for run/chat:
   --no-memory       still create and improve skills, but never put learned skills in the prompt (an ablation of memory)
   --consolidate     with maxConcurrency > 1: parallel scouts/workers, then one agent consolidates all findings and solutions
 
-Environment: FH_ENDPOINT, FH_MODEL, FH_API_KEY (or the variable named by FH_API_KEY_ENV), FH_AUTH_SCHEME, FH_METRICS_URL, FH_CONTEXT_WINDOW, FH_MAX_CONCURRENCY, FH_MEMORY=off, FH_CONSOLIDATE=1, FH_SHARED_STORE=1, FH_HOME";
+Environment: FH_ENDPOINT, FH_MODEL, FH_API_KEY (or the variable named by FH_API_KEY_ENV), FH_AUTH_SCHEME, FH_METRICS_URL, FH_CONTEXT_WINDOW, FH_MAX_CONCURRENCY, FH_MEMORY=off, FH_CONSOLIDATE=1, FH_WORKER_ENDPOINT, FH_WORKER_MODEL, FH_WORKER_CONTEXT_WINDOW, FH_SHARED_STORE=1, FH_HOME";
 
 pub struct Args {
     pub cmd: String,
@@ -546,6 +547,55 @@ pub async fn main(argv: Vec<String>) -> i32 {
                 "unverified" => 3,
                 _ => 1,
             }
+        }
+        "delegate" => {
+            // 27B+9B experiment: the main model plans, a worker model writes once, the main model verifies and fixes
+            let task = args.positional.join(" ");
+            let task = task.trim();
+            if task.is_empty() {
+                eprintln!("usage: fh delegate \"<task>\"  (needs FH_WORKER_ENDPOINT and FH_WORKER_MODEL)");
+                return 2;
+            }
+            let wcfg = match crate::delegate::worker_config(&cfg, &env) {
+                Ok(w) => w,
+                Err(e) => {
+                    eprintln!("{e}");
+                    return 2;
+                }
+            };
+            let prep = crate::delegate::prepare(&cfg, &wcfg, &env, &cwd, task).await;
+            if let Some(e) = &prep.error {
+                let n = prep.planner.requests + prep.worker.requests;
+                let r = serde_json::json!({"verdict": "error", "reason": e, "final": "", "changed": [], "rounds": 0, "workers": [],
+                    "llm": {"requests": n, "promptTokens": prep.planner.prompt_tokens + prep.worker.prompt_tokens, "completionTokens": prep.planner.completion_tokens + prep.worker.completion_tokens, "cachedTokens": 0, "toolCalls": 0},
+                    "delegate": crate::delegate::report_json(&prep)});
+                println!("{}", serde_json::to_string_pretty(&r).unwrap());
+                return 1;
+            }
+            let r = engine.run_task(&crate::delegate::verification_task(task, &prep), opts(Some(cancel))).await;
+            engine.drain(20_000).await;
+            let mut j = r.to_json();
+            for k in ["requests", "promptTokens", "completionTokens", "cachedTokens"] {
+                let (a, b, c) = match k {
+                    "requests" => (prep.planner.requests, prep.worker.requests, 0),
+                    "promptTokens" => (prep.planner.prompt_tokens, prep.worker.prompt_tokens, 0),
+                    "completionTokens" => (prep.planner.completion_tokens, prep.worker.completion_tokens, 0),
+                    _ => (prep.planner.cached_tokens, prep.worker.cached_tokens, 0),
+                };
+                let cur = j["llm"][k].as_u64().unwrap_or(0);
+                j["llm"][k] = serde_json::json!(cur + a + b + c);
+            }
+            j["delegate"] = crate::delegate::report_json(&prep);
+            if args.has("json") {
+                println!("{}", serde_json::to_string_pretty(&j).unwrap());
+            } else {
+                print_result(&r, false);
+            }
+            return match r.verdict.as_str() {
+                "pass" | "planned" => 0,
+                "unverified" => 3,
+                _ => 1,
+            };
         }
         "resume" => {
             let (task, state) = match crate::engine::load_resume(&env, &cwd, args.positional.first().map(|s| s.as_str())) {

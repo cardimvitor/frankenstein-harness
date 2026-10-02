@@ -29,14 +29,14 @@ def endpoint_host(endpoint: str) -> str | None:
     return urlparse(endpoint).hostname
 
 
-def run_command(instruction: str, *, logs_dir: str, max_concurrency: int | None, commit: bool, extra_flags: str = "", direct: bool = False) -> str:
+def run_command(instruction: str, *, logs_dir: str, max_concurrency: int | None, commit: bool, extra_flags: str = "", direct: bool = False, delegate: bool = False) -> str:
     """The shell command that runs one fh task inside the task container.
 
     The task's own working directory (the image WORKDIR) is the workspace. fh needs git for checkpoints:
     a directory that is not a repository is left alone (fh still works, without rollback).
     """
     # direct = the model alone (no agent loop, tools, verification or skills): the no-harness baseline
-    sub = "direct" if direct else "run"
+    sub = "direct" if direct else ("delegate" if delegate else "run")
     flags = "--commit" if direct and commit else ("" if direct else "--auto --yes --mode yolo --json" + (" --commit" if commit else ""))
     if extra_flags:
         flags += " " + extra_flags

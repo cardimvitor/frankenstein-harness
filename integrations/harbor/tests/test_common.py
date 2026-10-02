@@ -183,6 +183,10 @@ class SyncCli(unittest.TestCase):
 
 
 class Modes(unittest.TestCase):
+    def test_delegate_uses_the_full_run_flags_with_its_own_subcommand(self):
+        d = common.run_command("fix", logs_dir="/logs/agent", max_concurrency=None, commit=True, delegate=True)
+        self.assertIn(f"{common.FH_BIN} delegate --auto --yes --mode yolo --json --commit fix", d)
+
     def test_direct_runs_the_model_alone_and_run_keeps_the_harness_flags(self):
         d = common.run_command("fix 'it'", logs_dir="/logs/agent", max_concurrency=None, commit=True, direct=True)
         self.assertIn(f"{common.FH_BIN} direct --commit 'fix '\"'\"'it'\"'\"''", d)

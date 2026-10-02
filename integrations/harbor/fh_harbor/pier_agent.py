@@ -14,7 +14,7 @@ Settings come from ``--ak name=value`` or the agent/host environment:
     max_concurrency (FH_MAX_CONCURRENCY), commit ("true": DeepSWE grades `git diff base..HEAD`, so commit the result),
     state_dir (FH_STATE_DIR): host directory with learned skills shared across trials,
     memory ("off": learned skills are created and improved but never used), consolidate (max-parallel: scouts/workers,
-    then one consolidating agent; needs max_concurrency > 1), mode ("direct" = the model alone, no harness).
+    then one consolidating agent; needs max_concurrency > 1), mode ("direct" = the model alone, no harness; "delegate" = 27B plans, worker_endpoint/worker_model write once, 27B verifies).
 """
 
 from __future__ import annotations
@@ -54,6 +54,9 @@ class FrankensteinHarness(BaseInstalledAgent):
         memory: str | None = None,
         consolidate: bool | str = False,
         mode: str = "run",
+        worker_endpoint: str | None = None,
+        worker_model: str | None = None,
+        worker_context_window: int | str | None = None,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
@@ -68,6 +71,7 @@ class FrankensteinHarness(BaseInstalledAgent):
         self._memory = memory
         self._consolidate = _truthy(consolidate)
         self._mode = mode
+        self._worker = (worker_endpoint, worker_model, worker_context_window)
 
     @staticmethod
     def name() -> str:
@@ -116,7 +120,10 @@ class FrankensteinHarness(BaseInstalledAgent):
         )
 
     def network_allowlist(self) -> NetworkAllowlist:
-        return allowlist_from_urls([self._endpoint_url()])
+        urls = [self._endpoint_url()]
+        if self._mode == "delegate":
+            urls.append(self._get(self._worker[0], "FH_WORKER_ENDPOINT") or "")
+        return allowlist_from_urls([u for u in urls if u])
 
     @with_prompt_template
     async def run(self, instruction: str, environment: BaseEnvironment, context: AgentContext) -> None:
@@ -145,11 +152,18 @@ class FrankensteinHarness(BaseInstalledAgent):
             env["FH_MEMORY"] = mem
         if self._consolidate:
             env["FH_CONSOLIDATE"] = "1"
+        if self._mode == "delegate":
+            for name, val in zip(("FH_WORKER_ENDPOINT", "FH_WORKER_MODEL", "FH_WORKER_CONTEXT_WINDOW"), self._worker):
+                v = self._get(val, name)
+                if v:
+                    env[name] = v
+            if "FH_WORKER_ENDPOINT" not in env or "FH_WORKER_MODEL" not in env:
+                raise ValueError("mode=delegate needs worker_endpoint and worker_model")
         mc = self._get(self._max_concurrency, "FH_MAX_CONCURRENCY")
         try:
             await self.exec_as_agent(
                 environment,
-                command=common.run_command(instruction, logs_dir="/logs/agent", max_concurrency=int(mc) if mc else None, commit=self._commit, direct=self._mode == "direct"),
+                command=common.run_command(instruction, logs_dir="/logs/agent", max_concurrency=int(mc) if mc else None, commit=self._commit, direct=self._mode == "direct", delegate=self._mode == "delegate"),
                 env=env,
             )
         finally:
