@@ -1,6 +1,6 @@
 # Prompt de execução V2: validação de harnesses com o Frankenstein V2 (jg-eng-tests, DeepSWE e FrontierSWE)
 
-Cole este documento inteiro numa sessão do Claude Code com terminal na máquina da GPU. Execute, não apenas descreva. Não invente resultados: o que não for medido fica NOT_RUN ou N/D, com o motivo.
+Cole este documento inteiro numa sessão do Claude Code com terminal na máquina da GPU. Execute, não apenas descreva. Não invente resultados. **Nenhum teste é pulado** (decisão 14): o que for fisicamente impossível de medir fica registrado com a evidência da tentativa, e você avisa o dono; nunca se corta em silêncio nem por tempo.
 
 Esta versão substitui a primeira (`docs/VALIDACAO_JG_ENG_TESTS.md`) e incorpora as decisões abaixo.
 
@@ -15,9 +15,10 @@ Esta versão substitui a primeira (`docs/VALIDACAO_JG_ENG_TESTS.md`) e incorpora
 8. **Modelo fixo: `nvidia/Qwen3.8-27B-NVFP4` com MTP = 3.** É o checkpoint que o dono já validou antes numa RTX PRO 6000 Blackwell. Não há comparação de checkpoints nem varredura de MTP: baixe esse modelo, suba o vLLM com MTP 3 e use-o em tudo (seção 2.0). O que muda em relação à configuração validada é só o que a máquina exigir para subir, registrado.
 9. **A máquina inteira é da avaliação.** Antes de qualquer teste, libere toda a VRAM e os demais recursos parando os processos que não fazem parte da avaliação, e baixe e instale tudo de uma vez, em paralelo (seção 1, itens 7 e 8).
 10. **As oito configurações comparadas, em cadeia.** `modelo-direto` (o modelo sozinho, sem harness: a linha de base) → `fh-nomem` (o harness, sem usar memória) → `fh-mem1` (com memória, um agente) → `fh-memmax` (com memória, paralelização máxima e consolidação), mais `opencode`, `qwen-code`, `claude-code` e `deepseek`. A cadeia isola o efeito de cada peça: o harness (`fh-nomem` contra `modelo-direto`), a memória (`fh-mem1` contra `fh-nomem`) e a paralelização (`fh-memmax` contra `fh-mem1`). O relatório mostra, para cada harness, se ele melhorou ou piorou o modelo em relação à linha de base.
-11. **Contêineres: Docker se houver; senão Podman ou equivalente.** Detecte o que a máquina tem e use o mesmo runtime para tudo (seção 1, item 9). Sem nenhum runtime de contêiner, instale um (ou pergunte); sem ele só dá para rodar o jg-eng-tests com isolamento por usuário do sistema, e os benchmarks públicos ficam NOT_RUN.
+11. **Contêineres: Docker se houver; senão Podman ou equivalente.** Detecte o que a máquina tem e use o mesmo runtime para tudo (seção 1, item 9). Sem nenhum runtime de contêiner, instale um; se não for possível, **pare e pergunte ao dono** (os benchmarks públicos não rodam sem contêineres, e o jg-eng-tests só rodaria com isolamento por usuário do sistema). Isso não vira corte: é um pedido de ajuda.
 12. **Benchmarks públicos: só DeepSWE v1.1 e FrontierSWE v2.** Terminal-Bench 4.0, CWE-bench v1 e Vibe Code Bench saíram do plano: não rode, não baixe, não escreva adaptador.
 13. **Linha de base sem harness.** `modelo-direto` chama o modelo diretamente, uma vez por tarefa, sem ferramentas, laço de agente, verificação nem skills (`fh direct`, seção 5.2). Ela roda em todos os conjuntos de tarefas, como as outras configurações.
+14. **Nenhum teste é pulado.** Todos os 130 exercícios do jg-eng-tests, todas as 113 tarefas do DeepSWE v1.1 e todas as 34 tarefas do FrontierSWE v2 (inclusive as 11 que pedem GPU, seção 8.3), as oito configurações em cada uma, e todas as técnicas e variantes da fase 8. **Tempo não é motivo para cortar**: se parecer longo, aumente o paralelismo dentro das guardas, retome pelo `state.json` e informe o dono do tempo restante; só ele decide cortar algo. Uma tarefa que se mostre fisicamente inviável neste hardware **é executada mesmo assim**: o log da falha é a evidência, o resultado fica como "inviável neste hardware" (igual para as oito configurações) e o dono é avisado sem a execução parar.
 
 Nomes usados aqui: **Frankenstein V2** é o modelo (Qwen3.8-27B NVFP4 + MTP=3 no vLLM). **Frankenstein Harness** (`fh`) é o nosso harness. **Configuração** é uma linha da lista do item 10 (um harness num modo). Não confunda o modelo com o harness no relatório.
 
@@ -32,9 +33,7 @@ Nomes usados aqui: **Frankenstein V2** é o modelo (Qwen3.8-27B NVFP4 + MTP=3 no
 - AMOSTRAGEM: temperatura 1,0, top_p 0,95, top_k 20, igual para todos e imposta pelo proxy (seção 3)
 - EXECUTAR_ATE: fase `<0 a 8>` (a 7 são os benchmarks públicos; a 8, o teste de capacidade do `fh`, sempre por último)
 
-Estimativa de tempo, para planejar (o objetivo é terminar rápido e medir tudo que importa): o jg-eng-tests tem 8 configurações × 130 exercícios = 1 040 execuções. Como a execução principal começa direto no N_MAX da calibração, com uma execução média de 8 minutos são ~14 h se N_MAX = 10 e ~7 h se N_MAX = 20 (pior caso, tudo estourando os 900 s: ~26 h e ~13 h). Some a calibração (~1,5 h), o passe de tempo (~2 h) e a fase 8 (~3 h). Os benchmarks públicos (fase 7) usam subconjuntos fixos (seção 8.0): ~8 a 12 h.
-
-**Se o relógio apertar, corte nesta ordem** (do que menos para o que mais custa em informação): 1) as variantes de servidor e as técnicas 3 a 5 da fase 8; 2) o passe de tempo; 3) o FrontierSWE; 4) o subconjunto do DeepSWE (menos tarefas, a mesma semente); 5) as repetições. Nunca corte: a calibração, o piloto, o isolamento, o julgamento às cegas e as oito configurações no jg-eng-tests. O que for cortado vira NOT_RUN com o motivo; o relatório sai sempre, com o que foi medido. A sessão precisa conseguir retomar sem refazer o que já terminou (seção 5.0).
+Estimativa de tempo, para planejar. **Nenhum teste é pulado**, então o relógio é o que ele for; o que se controla é o paralelismo. jg-eng-tests: 8 configurações × 130 exercícios = 1 040 execuções, ~7 h se N_MAX chegar a 20 e ~14 h se parar em 10 (pior caso, tudo estourando os 900 s: ~13 h e ~26 h). DeepSWE v1.1: 113 tarefas × 8 = 904 execuções, com timeout oficial de 3 h por tarefa: de 1 a 3 dias, conforme o paralelismo que o host aguentar. FrontierSWE v2: 34 tarefas × 8 = 272 execuções de até 20 h cada: no pior caso são **semanas** (por exemplo, 23 tarefas sem GPU × 8 × 20 h ÷ 8 em paralelo ≈ 19 dias, mais o bloco com GPU); será menos se os agentes terminarem antes do limite. Some a calibração (~1,5 h), o passe de tempo (~4 h) e a fase 8 (~4 a 6 h). O orquestrador precisa retomar pelo `state.json` depois de qualquer queda, e o operador informa o dono do tempo restante estimado ao fim de cada fase, para que **só o dono** decida se quer mudar algo.
 
 ## 0. Regras que valem a sessão inteira
 1. As configurações avaliadas só veem a pasta `exercise/` de cada desafio. Nunca `solution/`, `grader/`, `EVALUATION.md`, o `.git` do jg-eng-tests, as pastas de outros exercícios ou resultados de outras configurações. A única exceção é a memória interna do próprio `fh` (decisão 2): o que ele aprendeu sozinho nos exercícios anteriores da **sua** configuração, nunca a nota do grader. Você (operador) nunca resolve exercício, nunca dá dica e nunca cola conteúdo do grader em prompt.
@@ -95,6 +94,7 @@ Estimativa de tempo, para planejar (o objetivo é terminar rápido e medir tudo 
    - o checkpoint `nvidia/Qwen3.8-27B-NVFP4` (`hf download --revision dbb8f445`, com `HF_HUB_ENABLE_HF_TRANSFER=1`), e nada mais: não baixe outros checkpoints;
    - vLLM em versão fixa, ou a sua imagem Docker, e o driver/CUDA que a receita pede;
    - imagens de contêiner: as bases dos exercícios, as dos benchmarks (DeepSWE e FrontierSWE), as do proxy e do LiteLLM;
+   - **NVIDIA Container Toolkit** (no Podman, CDI com `nvidia-ctk cdi generate`), necessário para as 11 tarefas do FrontierSWE que pedem GPU (seção 8.3);
    - toolchains: Rust (e o alvo musl do `fh`), .NET SDK 10.0.401, Node 24.15.0, `pwsh`, Python 3.12 com `uv`, e os language servers;
    - os harnesses: OpenCode, Qwen Code, Claude Code, DeepSeek Harness, LiteLLM (o `modelo-direto` usa o próprio `fh direct`, sem nada a instalar);
    - Harbor e Pier em versões fixas, e os datasets e repositórios: `jg-eng-tests`, `datacurve-ai/deep-swe`, `Proximal-Labs/frontier-swe-v2` (cerca de 770 MB);
@@ -103,9 +103,9 @@ Estimativa de tempo, para planejar (o objetivo é terminar rápido e medir tudo 
    Compile o `fh` (nativo e estático) enquanto os downloads rodam. Ao terminar, verifique tudo (checksums dos checkpoints, `--version` de cada ferramenta) e grave `WORKDIR/instalacao/VERSOES.md`. O que falhou é repetido uma vez; se falhar de novo, vai para o `REVISAO.md`. Nada pode depender de internet depois desta etapa.
 
 9. **Runtime de contêineres: Docker, senão Podman (decisão 11).** Onde este documento diz `docker`, vale o runtime que a máquina tiver.
-   1. **Detecte.** Se `docker info` responde, use Docker. Senão, se existe `podman`, use Podman. Se não existe nenhum, tente instalar (`apt-get install podman` ou o pacote da distribuição) quando houver root. Sem root e sem runtime, pare e pergunte: o jg-eng-tests ainda pode rodar com isolamento por usuário do sistema (um usuário por configuração, com `bubblewrap` quando houver), mas os benchmarks públicos ficam NOT_RUN com esse motivo.
+   1. **Detecte.** Se `docker info` responde, use Docker. Senão, se existe `podman`, use Podman. Se não existe nenhum, tente instalar (`apt-get install podman` ou o pacote da distribuição) quando houver root. Sem root e sem runtime, pare e pergunte ao dono. Enquanto ele não responde, o jg-eng-tests pode começar com isolamento por usuário do sistema (um usuário por configuração, com `bubblewrap` quando houver), mas os benchmarks públicos continuam PENDENTES até haver um runtime; nada é descartado.
    2. **Podman com Harbor e Pier.** Os dois conversam com a API do Docker (`docker` e `docker compose`). Ligue o socket compatível do Podman (`systemctl enable --now podman.socket`, ou `systemctl --user enable --now podman.socket` no modo rootless), aponte `DOCKER_HOST` para ele (`unix:///run/podman/podman.sock`, ou `unix://$XDG_RUNTIME_DIR/podman/podman.sock` no rootless), e tenha o cliente `docker` (pacote `podman-docker`) e o `docker compose` ou o `podman-compose`. Antes de seguir, prove que funciona: `docker version`, `docker compose version`, e um build e um run pequenos com uma tarefa de exemplo do Harbor e do Pier (o Pier sobe um Squid como proxy de saída no próprio compose: teste isso também).
-   3. **Rootless.** Precisa de espaço em `~/.local/share/containers`. Portas abaixo de 1024 exigem `sysctl net.ipv4.ip_unprivileged_port_start=80`, e o DeepSWE precisa da porta 80 (seção 8.2): sem root para isso, o DeepSWE fica NOT_RUN com esse motivo. Se os limites de CPU e memória por tarefa não funcionarem (cgroups v2 não delegados), anote: a cota por configuração da seção 5.0 passa a ser só do proxy e do orçamento de tarefas.
+   3. **Rootless.** Precisa de espaço em `~/.local/share/containers`. Portas abaixo de 1024 exigem `sysctl net.ipv4.ip_unprivileged_port_start=80`, e o DeepSWE precisa da porta 80 (seção 8.2): sem root para isso, tente um encaminhador de porta 80 dentro de um contêiner (no modo rootless o contêiner pode escutar em portas baixas no próprio namespace), confirme no piloto do DeepSWE que o `fh` recebe resposta e, se não funcionar, **pare e peça ao dono** o `sysctl` (ação de root); o DeepSWE fica PENDENTE até lá, nunca descartado. Se os limites de CPU e memória por tarefa não funcionarem (cgroups v2 não delegados), anote: a cota por configuração da seção 5.0 passa a ser só do proxy e do orçamento de tarefas.
    4. **Rede interna e GPU.** `docker network create --internal` vira `podman network create --internal`; reconfira a prova de isolamento da seção 3 item 7 com o runtime escolhido. Os agentes não usam GPU, só o vLLM: se ele rodar em contêiner Podman, use o CDI (`--device nvidia.com/gpu=all`); se rodar direto no host, nada a fazer.
    5. **Registre** o runtime, a versão (`docker --version` ou `podman --version`) e se é root ou rootless no `MANIFEST.json`, e use o mesmo para tudo.
 
@@ -240,7 +240,7 @@ As oito configurações da decisão 10 rodam **ao mesmo tempo**, cada uma isolad
 - **Erro de infraestrutura** (fora do denominador, listado com evidência): a configuração quebra antes da primeira chamada ao modelo (no `fh`, o JSON traz `verdict: error` com 0 requisições); o proxy ou o vLLM devolve 5xx ou fica inacessível; falha do runtime de contêineres, falta de memória ou disco; falha do `setup.sh`. Não são erro de infraestrutura: timeout, o agente desistir, tool call malformada, o agente estourar o contexto ou terminar sem mudar nada, e, no `modelo-direto`, edições que não casam com os arquivos.
 - **Piloto.** Antes de rodar tudo, um piloto com 3 exercícios (um .NET, um React e um Angular, por exemplo 01, 07 e o primeiro Angular do catálogo) **para cada uma das oito configurações, rodando juntas**: valida cada configuração (a chamada chegou ao proxy com a chave certa, escreveu arquivos, rodou `test.sh`) e o isolamento entre elas. O piloto não conta. Se revelar erro de configuração, corrija a *configuração* (nunca o prompt de tarefa) e repita.
 - **Por fase.** Em cada fase (jg-eng-tests, DeepSWE, FrontierSWE): vLLM novo, teste de fumaça, todas as configurações em paralelo, correção com o grader, parar o servidor.
-- Se uma configuração falhar em mais de 5 dos 10 primeiros exercícios por erro de infraestrutura, pare **só** essa configuração, marque UNSUPPORTED com evidência e deixe as outras seguirem.
+- Se uma configuração falhar em mais de 5 dos 10 primeiros exercícios por erro de infraestrutura, primeiro diagnostique e conserte (quase sempre é erro nosso de configuração, não do harness) e repita o piloto. Só se o harness realmente não puder rodar nesta máquina, pare **só** essa configuração, marque UNSUPPORTED com a evidência, **avise o dono** e deixe as outras seguirem; o dono decide o que fazer com ela.
 
 ### 5.0b Julgamento final (feito pela LLM operadora)
 A nota de cada exercício é decidida por você, a LLM que conduz os testes, em duas camadas. O modelo avaliado nunca participa.
@@ -305,10 +305,10 @@ O objetivo é terminar o conjunto mais rápido, com várias tarefas ao mesmo tem
 ### 5.0c Passe de tempo: velocidade comparável (cada configuração sozinha)
 Como as configurações dividem a GPU na execução principal, o tempo, o TTFT e o tok/s dela ficam contaminados (regra 4). Para ter velocidade comparável:
 - **Quando.** Depois da execução principal do jg-eng-tests, com o vLLM reiniciado e **uma configuração por vez**, na mesma ordem da tabela.
-- **O quê.** Um subconjunto fixo de 12 exercícios (6 .NET, 3 React, 3 Angular), escolhido com semente registrada **antes** da primeira execução, o mesmo para todas, com 4 tarefas simultâneas dentro da configuração (o mesmo valor para todas; registre). São ~25 minutos por configuração.
+- **O quê.** Um conjunto fixo de 20 exercícios (8 .NET, 6 React, 6 Angular), escolhido com semente registrada **antes** da primeira execução, o mesmo para todas, com 4 tarefas simultâneas dentro da configuração (o mesmo valor para todas; registre). São ~40 minutos por configuração.
 - **Memória.** O `fh-mem1` e o `fh-memmax` começam esse passe com a memória **vazia**: o armazém da execução principal já viu esses exercícios, e usá-lo vazaria resposta para a medição. O resultado de qualidade desse passe é reportado à parte e não entra no ranking.
 - **Métricas de velocidade.** O tempo por tarefa (média, mediana, P90), o TTFT, o tok/s por fluxo e a aceitação do MTP vêm **só deste passe**. Os tokens por tarefa e a qualidade vêm da execução principal.
-- Nos benchmarks públicos não há passe de tempo para o FrontierSWE (tarefas de horas); no DeepSWE, ele é opcional, com 10 tarefas de semente fixa.
+- **Benchmarks públicos.** No DeepSWE o passe de tempo também é feito, com 10 tarefas de semente fixa, cada configuração sozinha. No FrontierSWE as tarefas duram horas e o tempo é dominado pela execução de ferramentas e não pela geração; registre o tempo de parede de cada tarefa e o tok/s por fluxo, marcados como medidos sob carga compartilhada.
 
 ### 5.1 Configurações do `fh` (`fh-nomem`, `fh-mem1`, `fh-memmax`)
 As três usam o mesmo binário, o mesmo modelo, o mesmo proxy, a mesma amostragem e o mesmo comando. Só mudam três chaves de configuração, num diretório só de leitura por configuração, `WORKDIR/fh-config/<configuracao>/config.json`, passado com `FH_CONFIG_HOME`:
@@ -398,7 +398,7 @@ Via `OPENAI_BASE_URL=http://<proxy>:8001/v1`, `OPENAI_API_KEY=<chave do exercíc
 - **Prova.** Confirme no log do proxy e no firewall que nenhuma chamada saiu para a Anthropic.
 
 ### 5.6 DeepSeek Harness
-Localize o repositório oficial e verifique se aceita endpoint OpenAI-compatível customizado e tool calling com este modelo. Se não aceitar, marque UNSUPPORTED com a evidência (trecho de código ou documentação, versão) e siga. Se aceitar, use modo não interativo, com as mesmas permissões e sem web.
+Localize o repositório oficial e verifique se aceita endpoint OpenAI-compatível customizado e tool calling com este modelo. Antes de desistir, tente plugá-lo: um adaptador próprio (um shim OpenAI-compatível, ou o agente por import path do Harbor/Pier, como o `fh_harbor` do repositório) e registre a tentativa. Se de fato não aceitar, marque UNSUPPORTED com a evidência (trecho de código ou documentação, versão), **avise o dono** e siga. Se aceitar, use modo não interativo, com as mesmas permissões e sem web.
 
 ## 6. Fase 5: o que medir (por exercício e agregado por configuração)
 - **Qualidade:**
@@ -472,7 +472,7 @@ Feita pela LLM operadora, nunca pelo Qwen. Só o operador lê os graders, e só 
 Use também o sinal empírico: critérios que nenhuma configuração passou e critérios que falham só por formato. Termine com uma classificação (claro, ambíguo, defeituoso) e sugestões de correção por exercício.
 
 ### Entregáveis em `WORKDIR/relatorio/`
-1. `relatorio.md` e `relatorio.txt` com toda a análise e todos os números. Primeira seção: resumo de uma página com o ranking, a cadeia de ablação (direto → `fh-nomem` → `fh-mem1` → `fh-memmax`), N_MAX, os resultados dos benchmarks públicos (fase 7), a capacidade máxima medida na fase 8 e a lista de NOT_RUN/UNSUPPORTED.
+1. `relatorio.md` e `relatorio.txt` com toda a análise e todos os números. Primeira seção: resumo de uma página com o ranking, a cadeia de ablação (direto → `fh-nomem` → `fh-mem1` → `fh-memmax`), N_MAX, os resultados dos benchmarks públicos (fase 7), a capacidade máxima medida na fase 8 e a lista do que ficou inviável neste hardware, UNSUPPORTED ou PENDENTE, com a evidência.
 2. `relatorio.pdf` com tabelas e gráficos: ranking com intervalos, tokens, tempo e velocidade por configuração, aprovação por trilha/stack/nível, tok/s por fluxo e agregado contra G (calibração e mistura), e a cadeia de ablação com a diferença de cada configuração para o `modelo-direto`.
 3. `results.csv` e `results.json` por exercício e configuração, os logs do proxy, do `/metrics` e do `nvidia-smi`, e os JSONs do grader.
 4. `MANIFEST.json`:
@@ -495,14 +495,14 @@ Objetivo: rodar dois benchmarks públicos de código com as oito configurações
 | FrontierSWE v2 | 34 | px-eval sobre o Harbor | `github.com/Proximal-Labs/frontier-swe-v2` | até 20 h por tarefa, várias exigem GPU |
 
 ### 8.0 Mecânica comum
-- **Uma invocação por configuração, todas ao mesmo tempo.** Cada configuração roda numa invocação própria do Harbor ou do Pier, com `-n` fixo igual a `max(1, floor(N_MAX ÷ 8))` (por exemplo, N_MAX = 20 dá 2 por configuração; registre). Como os runners não se coordenam entre si, o total de tarefas simultâneas é a soma dos `-n` e nunca passa de N_MAX da seção 5.0a. Se N_MAX < 8, as configurações rodam em ondas de N_MAX invocações, com as do `fh` na primeira onda; a espera acontece **entre** configurações, nunca no meio de uma.
-- **Ordem (decisão 7).** Dentro de uma onda, e na lista dos relatórios, a ordem é a da tabela da seção 5: `fh-nomem`, `fh-mem1`, `fh-memmax`, `modelo-direto`, `opencode`, `qwen-code`, `claude-code`, `deepseek`. Entre benchmarks: DeepSWE v1.1 primeiro, FrontierSWE v2 por último (o mais longo). **Um vLLM novo por benchmark**, compartilhado pelas configurações que rodam juntas (regra 4).
-- **Mesmo subconjunto fixo para todas, pequeno por padrão (para terminar rápido).** DeepSWE: **30 tarefas** (`--n-tasks 30 --sample-seed 0` no Pier). FrontierSWE: **até 6 tarefas** com `gpus = 0` (semente 0, `-l 6`/`-i` no Harbor). O subconjunto é decidido e gravado **antes** da primeira configuração, e todas rodam exatamente ele. Só aumente se sobrar tempo, e aí aumente para todas igual. O benchmark inteiro fica como NOT_RUN ("subconjunto por tempo"), com a lista das tarefas rodadas no `MANIFEST.json`.
+- **Uma invocação por configuração e por benchmark, todas ao mesmo tempo.** Cada configuração roda numa invocação própria do Harbor ou do Pier para cada benchmark. Nas tarefas longas o limite do paralelismo é o **host**, não o N_MAX (elas geram poucos tokens por minuto): `-n` por configuração e por benchmark = `floor(min(núcleos livres ÷ CPUs por tarefa, RAM livre ÷ memória por tarefa) ÷ (8 configurações × 2 benchmarks))`, no mínimo 1. A cota do proxy (seção 3 item 8) e a guarda de 30 tok/s por tarefa da seção 5.0a continuam valendo na fase inteira: se a guarda falhar, reduza o `-n` de todas igualmente e registre. Como os runners não se coordenam, as invocações são lançadas juntas e o total é a soma dos `-n`. Se nem o mínimo (1 × 8 × 2 = 16 tarefas) couber no host, rode um benchmark por vez e registre.
+- **Ordem (decisão 7).** Na fila e nos relatórios a ordem é a da tabela da seção 5: `fh-nomem`, `fh-mem1`, `fh-memmax`, `modelo-direto`, `opencode`, `qwen-code`, `claude-code`, `deepseek`. **DeepSWE e as 23 tarefas do FrontierSWE sem GPU rodam juntos, num mesmo vLLM novo** (regra 4), para sobrepor tarefas longas que usam pouco o modelo. As 11 tarefas com GPU rodam depois, num bloco próprio (seção 8.3).
+- **Todas as tarefas, para todas as configurações (decisão 14).** DeepSWE: as 113 tarefas. FrontierSWE: as 34. Nada de subconjunto: todas as configurações rodam exatamente as mesmas tarefas, e a lista (com a versão do conjunto) vai para o `MANIFEST.json`.
 - **Timeouts.** Use os timeouts oficiais de cada benchmark, sem multiplicadores. Se for preciso encurtar, isso vira variante com nome próprio, fora da comparação.
 - **Piloto.** Antes de cada benchmark, 2 tarefas por configuração, **rodando juntas**, fora da contagem, para validar a ligação e o isolamento: o agente instalou, falou com o proxy usando a chave certa, o verificador rodou e gravou a nota.
 - **Nota.** Vale a nota do verificador oficial de cada benchmark, sobre a entrega final (decisão 1). Faça também uma revisão às cegas, pela LLM operadora, de 10% das tarefas aprovadas de cada configuração, procurando trapaça (teste alterado, resposta fixa). Uma aprovação derrubada é reportada à parte; ela não muda a nota oficial.
 - **Memória do `fh` (decisão 2).** Cada configuração do `fh` tem o seu diretório de skills por benchmark, vazio no início, passado com `--ak state_dir=WORKDIR/fh-state/<benchmark>/<configuracao>`. O adaptador copia a memória para cada tarefa e a funde de volta ao final, com trava, mesmo com tarefas em paralelo (seção 5.1: um só dono). Os diretórios das três configurações do `fh` nunca se misturam.
-- **Medição.** Tudo passa pelo proxy (seção 3): tokens, TTFT, tok/s, aceitação do MTP, GPU. Some a isso o resultado do Harbor/Pier (`result.json` de cada job). Como as configurações dividem a GPU, a velocidade comparável vem de um passe de tempo (seção 5.0c): opcional no DeepSWE (10 tarefas de semente fixa) e dispensado no FrontierSWE.
+- **Medição.** Tudo passa pelo proxy (seção 3): tokens, TTFT, tok/s, aceitação do MTP, GPU. Some a isso o resultado do Harbor/Pier (`result.json` de cada job). Como as configurações dividem a GPU, a velocidade comparável vem de um passe de tempo (seção 5.0c): feito no DeepSWE (10 tarefas de semente fixa) e só informativo no FrontierSWE.
 
 ### 8.1 Como o `fh` entra nos benchmarks (adaptadores do repositório)
 O repositório já traz os adaptadores em `integrations/harbor/fh_harbor/`, documentados em `integrations/harbor/README.md`:
@@ -546,14 +546,20 @@ pier run -p deep-swe/tasks \
   -n <o -n da seção 8.0> -o WORKDIR/bench/deepswe/fh-nomem
 ```
 - **Exemplo acima: `fh-nomem`.** As outras configurações do `fh` mudam só as opções da tabela da seção 8.1, e o `modelo-direto` usa `--ak mode=direct --ak commit=true`.
-- **Outros harnesses.** O Pier tem OpenCode e Claude Code nativos. Para o Qwen Code e o DeepSeek, que não estão no Pier, tente as mesmas tarefas no Harbor. Se ele não suportar o formato 1.3 dessas tarefas (`verifier.collect`, `environment_mode = "separate"`), marque UNSUPPORTED com a evidência.
+- **Outros harnesses.** O Pier tem OpenCode e Claude Code nativos. Para o Qwen Code e o DeepSeek, que não estão no Pier, tente as mesmas tarefas no Harbor. Se o Harbor não suportar o formato 1.3 dessas tarefas (`verifier.collect`, `environment_mode = "separate"`), porte o adaptador do Harbor (`qwen_code.py`, ou o do DeepSeek) para o Pier, que tem a mesma ideia com `install_spec` (como o `fh_harbor.pier_agent` do repositório). Só se isso for impossível, marque UNSUPPORTED com a evidência e avise o dono.
 - A Epoch apontou problemas em pelo menos 23 das 113 tarefas. Se houver lista pública delas, reporte também a nota sem essas tarefas.
 - Referência externa: o líder público tinha 75,4%, e a faixa dos nove modelos da v1.1 ia de 12% a 70%.
 
 ### 8.3 FrontierSWE v2 (por último)
 - Clone `Proximal-Labs/frontier-swe-v2` e use o runner indicado no README (px-eval, sobre o Harbor). Registre o commit.
-- **GPU.** Muitas tarefas pedem GPU (`gpus` no `task.toml`), e a GPU da máquina já está ocupada pelo vLLM. Rode só as tarefas com `gpus = 0`. As que pedem GPU ficam NOT_RUN ("ambiente: GPU ocupada pelo modelo avaliado"), a menos que exista uma segunda GPU livre; nesse caso, registre qual.
-- **Tempo.** Cada tarefa pode durar até 20 h; o oficial é mean@5. Rode 1 tentativa por tarefa e reporte como mean@1, deixando claro que não é comparável ao mean@5 do placar. Com tempo sobrando, faça mais tentativas só nas tarefas do `fh-mem1` e da melhor outra configuração.
+- **Tarefas com GPU: 11 das 34, e nenhuma é pulada.** O `task.toml` diz o que cada uma pede: 5 querem uma GPU de 24 a 48 GB (L4, A10G, L40S), 5 querem uma de classe 80 GB ou mais (A100-80GB, H100, B200) e 1 quer duas (T4 × 2). Como a única GPU da máquina também serve o vLLM, elas rodam num **bloco de GPU compartilhada**, depois de todo o resto:
+  1. Reinicie o vLLM com `--gpu-memory-utilization` mais baixo, como variante com nome próprio (`vllm-gpu-compartilhada`): o mesmo modelo, o mesmo MTP 3 e nada mais mudado. Comece em 0,40 (deixa cerca de 55 GB livres) e ajuste só o necessário para o vLLM subir e atender as sessões. Os testes sem GPU já terminaram, então esta variante não toca neles.
+  2. Exponha a GPU aos contêineres (NVIDIA Container Toolkit; no Podman, CDI) e limite cada tarefa à sua parte da VRAM.
+  3. Um **gerenciador de VRAM** lança tarefas com GPU ao mesmo tempo só enquanto a soma das VRAMs pedidas couber no que sobrou (L4 e A10G ≈ 24 GB, L40S ≈ 48 GB); as outras esperam. Os agentes que esperam não consomem tempo de tarefa.
+  4. As oito configurações rodam a mesma tarefa uma depois da outra, na ordem da tabela da seção 5, com o timeout oficial de cada uma.
+  5. As tarefas de classe 80 GB ou mais e a de 2 GPUs **são executadas mesmo assim** (a de 2 GPUs com `--override-gpus 1`). Se rodarem, vale a nota. Se falharem por falta de VRAM, de arquitetura ou de driver (por exemplo, uma otimização feita para B200 numa Blackwell de outra geração), o log do erro é a evidência e o resultado é **inviável neste hardware**, igual para as oito configurações. Não é pular: a tentativa foi feita. Avise o dono, com a lista e as evidências, sem parar a execução.
+  6. O resultado desse bloco é marcado como "ambiente diferente do placar" (GPU e memória diferentes das do tipo nominal).
+- **Tempo.** Use o timeout oficial de cada tarefa (72 000 s, ou seja, 20 h; 54 000 s numa), sem multiplicador. Cada tarefa pode usar tudo isso; o oficial é mean@5. Rode 1 tentativa por tarefa e reporte como mean@1, deixando claro que não é comparável ao mean@5 do placar. Com tempo sobrando, faça mais tentativas só nas tarefas do `fh-mem1` e da melhor outra configuração.
 - Referência externa: GPT-6 Astra 65,5%, Claude Opus 5.5 62,3%, Sonnet 5.5 61,9% (mean@5, com o harness próprio da Proximal).
 
 ### 8.4 Relatório dos benchmarks
@@ -562,7 +568,7 @@ Para cada benchmark e configuração, reporte:
 - **a diferença para o `modelo-direto`** (melhorou, piorou ou sem diferença conclusiva) e a cadeia de ablação da seção 7 (harness, memória, paralelização) também nesses benchmarks;
 - comparação pareada tarefa a tarefa contra o `fh-mem1` e o `fh-memmax`;
 - tokens (total e sem cache) por tarefa resolvida e o `-n` usado; tempo por tarefa só do passe de tempo, quando houve;
-- tarefas NOT_RUN e UNSUPPORTED com motivo;
+- tarefas inviáveis neste hardware ou UNSUPPORTED, com a evidência;
 - a referência externa do placar, marcada como ambiente diferente (outro modelo e, às vezes, outro harness).
 
 Inclua tudo em `relatorio.md`, no PDF e em `results.csv` (coluna `benchmark`).
@@ -622,12 +628,13 @@ Objetivo (decisão 5): quantos usuários simultâneos o servidor aguenta com o `
 
 **Técnica 5: resistência.** 20 minutos contínuos no nível "confortável". Procure degradação ao longo do tempo: tok/s caindo, VRAM ou RAM subindo, temperatura, erros tardios.
 
-**Variantes de servidor** (cada uma reiniciada e medida com a técnica 3 e, nos 3 degraus ao redor do limite, com a técnica 1). **Prioritárias, nesta ordem:**
+**Variantes de servidor, todas obrigatórias** (cada uma reiniciada e medida com a técnica 3 e, nos 3 degraus ao redor do limite, com a técnica 1), nesta ordem:
 1. `max-num-seqs` 128;
 2. MTP com `num_speculative_tokens` 1 e, em seguida, sem MTP (sob lote grande, a especulação pode render menos que o custo);
 3. `max-model-len` 65536 (mais sequências cabem no KV cache).
-
-**Só se sobrar tempo:** `max-num-seqs` 256, `gpu-memory-utilization` 0.95, e `max-num-batched-tokens` maior ou menor com o chunked prefill da versão instalada.
+4. `max-num-seqs` 256;
+5. `gpu-memory-utilization` 0.95;
+6. `max-num-batched-tokens` maior e depois menor, com o chunked prefill da versão instalada.
 
 Confira cada flag em `vllm serve --help`. Registre para cada variante a capacidade confortável e o limite, e diga qual configuração maximiza usuários confortáveis e qual maximiza a vazão agregada. Podem não ser a mesma.
 
@@ -636,4 +643,4 @@ Confira cada flag em `vllm serve --help`. Registre para cada variante a capacida
 - a tabela de capacidade em três níveis;
 - a recomendação final: quantos usuários simultâneos do `fh` a GPU aguenta com conforto, com qual configuração e com que tok/s médio por usuário.
 
-Ao atingir qualquer limite (tempo, disco, fase em EXECUTAR_ATE), gere o relatório com o que foi medido e liste o que ficou NOT_RUN ou UNSUPPORTED, com o motivo.
+Se bater um limite de disco ou de hardware, **pare e pergunte ao dono**; não corte em silêncio. O relatório parcial sai sempre, com o que já foi medido, e o que ainda falta fica como PENDENTE (nunca como pulado) até o dono decidir. No fim, o que restar de inviável neste hardware ou UNSUPPORTED aparece com a evidência de cada tentativa.
