@@ -5,13 +5,13 @@ Documento autônomo, executado por outra LLM numa **sessão própria**, depois (
 Repositório avaliado: https://github.com/akitaonrails/ai-jail (Rust, licença GPL-3.0). Fixe o commit do HEAD no início e registre. **Licença:** não copie conteúdo do ai-jail para nossos repositórios nem para o relatório além de trechos curtos de citação; as tarefas ficam só em WORKDIR e não são commitadas em lugar nenhum.
 
 ## 1. Objetivo
-1. Rodar **as mesmas onze configurações** (`modelo-direto`, `fh-nomem`, `fh-mem1`, `fh-memmax`, `opencode`, `qwen-code`, `claude-code`, `deepseek`, mais `modelo9b-direto`, `delegado-puro-27b-9b` e `delegado-fh-27b-9b`; na ordem da decisão 7 do plano V2: sem harness, depois `fh`, depois os outros) em tarefas reais extraídas da história do ai-jail, e comparar o efeito de cada harness sobre o modelo fixo `nvidia/Qwen3.8-27B-NVFP4` (MTP 3).
+1. Rodar **as mesmas onze configurações** (`big-frank-direto`, `fh-nomem`, `fh-mem1`, `fh-memmax`, `opencode`, `qwen-code`, `claude-code`, `deepseek`, mais `small-frank-direto`, `big-small-puro` e `big-small-fh`; na ordem da decisão 7 do plano V2: sem harness, depois `fh`, depois os outros) em tarefas reais extraídas da história do ai-jail, e comparar o efeito de cada harness sobre o modelo fixo `nvidia/Qwen3.8-27B-NVFP4` (MTP 3).
 2. **Avaliar o próprio conjunto**: dizer quais tarefas e testes são confiáveis (determinísticos, sem dependência escondida do ambiente, sem ambiguidade), para que a nota signifique algo.
 
 Entregáveis numa pasta separada `relatorio-ai-jail/` (nunca misturada à do jg-eng-tests nem à do DeepSWE).
 
 ## 2. Independência da sessão principal
-- Servidores vLLM **próprios** desta sessão (27B e o 9B da seção 2.2 do plano V2, com o MTP já escolhido na sessão principal; se a varredura não foi feita, faça-a antes), recém-iniciado, mesmo comando e mesmas flags da seção 2.1 do plano V2. **Nunca** simultâneo com outra sessão nem com a fase 8 (capacidade) do plano principal: as duas dividiriam a GPU e contaminariam medidas.
+- Servidores vLLM **próprios** desta sessão (Big Frank e o Small Frank da seção 2.2 do plano V2, com o MTP já escolhido na sessão principal; se a varredura não foi feita, faça-a antes), recém-iniciado, mesmo comando e mesmas flags da seção 2.1 do plano V2. **Nunca** simultâneo com outra sessão nem com a fase 8 (capacidade) do plano principal: as duas dividiriam a GPU e contaminariam medidas.
 - Fases 0 a 3 do plano V2 (máquina, downloads, runtime de contêiner, servidor, proxy de medição, isolamento): reaproveite se a máquina já estiver pronta e o servidor verificado (122,1 tok/s por fluxo e 75,7% de aceitação MTP, margem de 15%); caso contrário, refaça-as.
 - Memória do `fh`: **vazia** no início de cada configuração do `fh` nesta sessão (não herda a das outras sessões).
 - Concorrência: reaproveite o **N_MAX** da calibração da sessão principal se ela existir e o hardware for o mesmo; senão rode a rampa de 5 em 5 da seção 5.0a (aqui basta a rampa, sem o teste de capacidade). Repartição justa e cota por configuração: seção 5.0 e item 8 da seção 3 do plano V2.
@@ -32,7 +32,7 @@ O ai-jail não traz uma suíte de tarefas pronta; as tarefas saem dos commits (e
 7. Salve em `WORKDIR/ai-jail-tasks/<sha>/` (`task.json`, `hidden/`, `workspace/`, `instruction.md`, `validation.json`). Ordem de execução: a da história do git (mais antigo primeiro), igual para todas.
 
 ## 4. Execução
-- Reuse a mecânica do plano V2: seção 5.0 (isolamento e orquestrador com retomada pelo `state.json`), 5.0a (G e rampa), 5.0b (julgamento), 5.0c (passe de tempo: cada configuração sozinha, em 20 tarefas), 5.1 (modos do `fh`), 5.2 (`modelo-direto` via `fh direct`: um pedido com o snapshot do repositório, blocos SEARCH/REPLACE aplicados como escritos) e 5.3 a 5.6 (os outros harnesses, com a mesma amostragem imposta pelo proxy).
+- Reuse a mecânica do plano V2: seção 5.0 (isolamento e orquestrador com retomada pelo `state.json`), 5.0a (G e rampa), 5.0b (julgamento), 5.0c (passe de tempo: cada configuração sozinha, em 20 tarefas), 5.1 (modos do `fh`), 5.2 (`big-frank-direto` via `fh direct`: um pedido com o snapshot do repositório, blocos SEARCH/REPLACE aplicados como escritos) e 5.3 a 5.6 (os outros harnesses, com a mesma amostragem imposta pelo proxy).
 - Prompt de tarefa: idêntico nas onze configurações = instrução + "Trabalhe no repositório do diretório atual; só vale o estado final do disco. Não há acesso à internet." Timeout por tarefa: **1 800 s** (compilação Rust é lenta; os 900 s do jg-eng-tests não servem). Amostragem: temperatura 1,0, top_p 0,95, top_k 20, imposta pelo proxy.
 - Os agentes veem só `workspace/`. Nunca `hidden/`, `validation.json` nem as tarefas das outras configurações.
 
@@ -40,7 +40,7 @@ O ai-jail não traz uma suíte de tarefas pronta; as tarefas saem dos commits (e
 1. Grader objetivo: `mine_commit_tasks.py grade <tarefa> <workspace-do-agente>`. Sobrepõe os testes ocultos (os `tests/*.rs` e o módulo `#[cfg(test)]` do commit **substituindo** o do candidato) e executa. **Passa** quando todos os testes de R rodaram e passaram. Resultado "teste ausente/não rodou" = falha (o agente não pode esconder um teste apagando-o).
 2. Mesmo ambiente de correção para as onze, o mesmo `CARGO_TARGET_DIR` **jamais** compartilhado entre candidatos de configurações diferentes sem tocar nos mtimes (`mine_commit_tasks.py` já usa cópias com mtime novo e `CARGO_INCREMENTAL=0`; não contorne isso).
 3. **Revisão às cegas** (5.0b do plano V2): você lê cada diff anonimizado, sem saber a configuração, e dá nota de 0 a 2 em: correção do comportamento pedido, ausência de regressão/gambiarra para passar teste, qualidade. Critério extra **específico do ai-jail**: *a mudança não pode enfraquecer a segurança do sandbox* (relaxar restrições do bwrap/landlock/seccomp, ampliar montagens, ignorar erros de isolamento, `unsafe` novo sem justificativa, trocar uma falha fechada por uma aberta). Qualquer enfraquecimento = reprovado, mesmo com os testes passando.
-4. Reporte por configuração: aprovadas/válidas com intervalo de Wilson 95%, McNemar pareado contra `modelo-direto` e entre as configurações da cadeia (direto → nomem → mem1 → memmax), tokens, requisições, tempo de parede, tok/s do passe de tempo. A ordem é a da decisão 7 do plano V2. "Só vale o resultado final" vale aqui também.
+4. Reporte por configuração: aprovadas/válidas com intervalo de Wilson 95%, McNemar pareado contra `big-frank-direto` e entre as configurações da cadeia (direto → nomem → mem1 → memmax), tokens, requisições, tempo de parede, tok/s do passe de tempo. A ordem é a da decisão 7 do plano V2. "Só vale o resultado final" vale aqui também.
 
 ## 6. Avaliar o conjunto (o "eval it too")
 Registre em `relatorio-ai-jail/avaliacao-do-conjunto.md`:

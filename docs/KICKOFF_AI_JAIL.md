@@ -3,7 +3,7 @@
 Cole o bloco numa sessão de agente com terminal na máquina da GPU. Não cole chaves; exporte-as antes.
 
 ```text
-Você vai conduzir, do começo ao fim, uma sessão separada de validação: as onze configurações (modelo-direto, fh-nomem, fh-mem1, fh-memmax, opencode, qwen-code, claude-code, deepseek, modelo9b-direto, delegado-puro-27b-9b e delegado-fh-27b-9b) rodando tarefas extraídas do repositório https://github.com/akitaonrails/ai-jail, e a avaliação do próprio conjunto de testes. Você é a LLM operadora e juíza; o Qwen nunca julga nada.
+Você vai conduzir, do começo ao fim, uma sessão separada de validação: as onze configurações (big-frank-direto, fh-nomem, fh-mem1, fh-memmax, opencode, qwen-code, claude-code, deepseek, small-frank-direto, big-small-puro e big-small-fh) rodando tarefas extraídas do repositório https://github.com/akitaonrails/ai-jail, e a avaliação do próprio conjunto de testes. Você é a LLM operadora e juíza; o Qwen nunca julga nada.
 
 DADOS
 - Harness: https://github.com/cardimvitor/frankenstein-harness, branch ccr-3bc51f62-prkdq0 (use as credenciais git desta máquina). Especificação desta sessão: docs/VALIDACAO_AI_JAIL.md. Ela herda a mecânica de docs/VALIDACAO_JG_ENG_TESTS_V2.md; onde calar, vale o V2, e a seção "Decisões do dono" dele vale acima de tudo (só o resultado final conta; o juiz é você; nenhum teste é pulado).
