@@ -12,15 +12,15 @@ Esta versão substitui a primeira (`docs/VALIDACAO_JG_ENG_TESTS.md`) e incorpora
 5. **Teste final de capacidade, só do `fh`.** Ao final de tudo, começa com 20 sessões simultâneas e vai aumentando até onde o servidor aguenta. Mede o tok/s de cada atividade para calcular o tok/s médio por usuário e descobre a capacidade máxima em uso extremo, com outras técnicas de carga além da carga real (seção 9).
 6. **Quem julga a assertividade final é a LLM que conduz os testes, não o Qwen.** O juiz é você, a LLM operadora que está executando este prompt. O Frankenstein V2 (Qwen) aparece só como o modelo avaliado, dentro dos harnesses. Nada do que ele diz sobre o próprio trabalho entra na nota: nem o veredito interno do `fh`, nem o revisor LLM do `fh`, nem o "terminei, todos os testes passam" de qualquer harness. Esses sinais não entram no relatório como métrica. Detalhes na seção 5.0b.
 7. **O `fh` vem sempre primeiro, nas duas versões.** Em cada comparação (jg-eng-tests e cada benchmark público), a ordem é: `fh` modo 1 agente, `fh` modo máximo, e só depois os outros harnesses. Os benchmarks públicos (seção 8) rodam para todos os harnesses, como o jg-eng-tests, com tarefas em paralelo.
-8. **A melhor configuração possível para uma RTX PRO 6000 Blackwell.** Antes de qualquer teste, baixe e compare os checkpoints oficiais do Qwen3.8-27B próprios para essa placa (NVFP4 nativo do Blackwell, FP8, e BF16 como referência de qualidade), ajuste o vLLM e fixe o vencedor para a sessão inteira (seção 2.0).
+8. **Modelo fixo: `nvidia/Qwen3.8-27B-NVFP4` com MTP = 3.** É o checkpoint que o dono já validou antes numa RTX PRO 6000 Blackwell. Não há comparação de checkpoints nem varredura de MTP: baixe esse modelo, suba o vLLM com MTP 3 e use-o em tudo (seção 2.0). O que muda em relação à configuração validada é só o que a máquina exigir para subir, registrado.
 9. **A máquina inteira é da avaliação.** Antes de qualquer teste, libere toda a VRAM e os demais recursos parando os processos que não fazem parte da avaliação, e baixe e instale tudo de uma vez, em paralelo (seção 1, itens 7 e 8).
 
 Nomes usados aqui: **Frankenstein V2** é o modelo (Qwen3.8-27B NVFP4 + MTP=3 no vLLM). **Frankenstein Harness** (`fh`) é o nosso harness. Não confunda os dois no relatório.
 
 ## CONFIGURAÇÃO (preencher antes de colar)
 - REPO: https://github.com/dfnb/jg-eng-tests, fixado no commit `36cbe4741e5730fae876fae3bff6fa167fb18cb7`. Se o HEAD for outro, pare e avise.
-- GPU: uma RTX PRO 6000 Blackwell 96 GB (SM120), inteira para a avaliação (decisão 9). O checkpoint e as flags saem da seção 2.0
-- WORKDIR: `<ex.: /workspace/harness-eval>` (precisa de ~150 GB livres para as execuções, mais ~200 GB para os checkpoints candidatos da seção 2.0 e as imagens Docker dos benchmarks)
+- GPU: uma RTX PRO 6000 Blackwell 96 GB (SM120), inteira para a avaliação (decisão 9). Modelo fixo: `nvidia/Qwen3.8-27B-NVFP4`, MTP 3 (seção 2.0)
+- WORKDIR: `<ex.: /workspace/harness-eval>` (precisa de ~150 GB livres para as execuções, mais ~30 GB para o checkpoint NVFP4 (cerca de 25 GB) e as imagens Docker dos benchmarks)
 - FRANKENSTEIN_HARNESS: repositório https://github.com/cardimvitor/frankenstein-harness, branch `ccr-3bc51f62-prkdq0`. Compilar com `cargo build --release` e usar `target/release/fh`. Registre o commit.
 - EXERCICIOS_EM_PARALELO: rampa gradual 2 → 3 → 4 → 5; depois 6 → 7 → 8 → 9 → 10, um degrau por vez e só se o anterior não prejudicou o desempenho. O teto N_MAX sai da calibração e vale no máximo 10 nesta rodada (seção 5.0a). A escala é a mesma para todos os harnesses
 - TIMEOUT_POR_EXERCICIO: 900 s de parede, contando do início do harness até o processo terminar
@@ -85,7 +85,7 @@ Estimativa de tempo, para planejar: com N_MAX = 10, o pior caso (todos os exerc�
    7. **Desempenho (precisa de root; sem root, anote que não deu):** `nvidia-smi -pm 1` (modo persistente), governador de CPU em `performance` (`cpupower frequency-set -g performance`), `ulimit -n` alto, `/dev/shm` com pelo menos 16 GB (e `--shm-size` nos contêineres) e swappiness baixo. Grave os valores em `WORKDIR/maquina/depois.txt`, junto de um segundo `nvidia-smi` mostrando a VRAM livre.
    8. **Reserva.** O vLLM e o proxy têm prioridade. Deixe sempre livres pelo menos 4 núcleos e 16 GB de RAM para eles, e limite o paralelismo das tarefas de acordo (as `cpus` e `memory_mb` de cada tarefa são o teto; reduza `-n` antes de tirar recurso do vLLM).
 8. **Baixe e instale tudo logo no começo, em paralelo.** Primeiro confira o espaço em disco contra a soma do que vai baixar (checkpoints, imagens Docker, datasets, caches); se faltar, pare e avise. Depois dispare, em paralelo e em segundo plano, cada item com seu log em `WORKDIR/instalacao/<item>.log`, com no máximo 4 a 6 downloads simultâneos, para não saturar disco e rede:
-   - os checkpoints candidatos da seção 2.0 (`hf download` com `HF_HUB_ENABLE_HF_TRANSFER=1`);
+   - o checkpoint `nvidia/Qwen3.8-27B-NVFP4` (`hf download --revision dbb8f445`, com `HF_HUB_ENABLE_HF_TRANSFER=1`), e nada mais: não baixe outros checkpoints;
    - vLLM em versão fixa, ou a sua imagem Docker, e o driver/CUDA que a receita pede;
    - imagens Docker: as bases dos exercícios, as dos benchmarks (Terminal-Bench, DeepSWE, FrontierSWE), as do proxy e do LiteLLM;
    - toolchains: Rust (e o alvo musl do `fh`), .NET SDK 10.0.401, Node 24.15.0, `pwsh`, Python 3.12 com `uv`, e os language servers;
@@ -97,45 +97,20 @@ Estimativa de tempo, para planejar: com N_MAX = 10, o pior caso (todos os exerc�
 
 ## 2. Fase 1: servidor, configuração validada do Frankenstein V2
 
-### 2.0 Escolha do checkpoint e da configuração para uma RTX PRO 6000 Blackwell (decisão 8, antes de tudo)
-O dono do projeto quer a melhor configuração possível para **uma** RTX PRO 6000 Blackwell (96 GB, SM120). O que sair daqui vira o "Frankenstein V2" da sessão inteira e fica **fixo** em todas as fases seguintes (regra 5). A configuração validada antes, logo abaixo, é a linha de base que os outros candidatos precisam bater.
+### 2.0 Modelo fixo: `nvidia/Qwen3.8-27B-NVFP4`, MTP 3 (decisão 8)
+O modelo da sessão inteira é o checkpoint https://huggingface.co/nvidia/Qwen3.8-27B-NVFP4, com decodificação especulativa MTP de 3 tokens (`num_speculative_tokens = 3`). O dono do projeto já o validou numa RTX PRO 6000 Blackwell, então **não há escolha de checkpoint, nem varredura de MTP, nem comparação com BF16, FP8 ou quantizações da comunidade**. Esse é o "Frankenstein V2" de todas as fases.
 
-**Candidatos.** Só pesos oficiais do Qwen3.8-27B ou quantizações fiéis deles, todos com a cabeça MTP do próprio modelo. Nada de fine-tunes, "uncensored", merges ou destilações da comunidade.
-1. `nvidia/Qwen3.8-27B-NVFP4`, a linha de base validada: revisão `dbb8f445`, 122,1 tok/s por fluxo e aceitação do MTP de 75,7%.
-2. `nvidia/Qwen3.8-27B-NVFP4` na revisão mais recente, se for diferente de `dbb8f445`.
-3. `Inferact/Qwen3.8-27B-NVFP4`, citado com aceitação do MTP de 0,897 em outra GPU.
-4. `unsloth/Qwen3.8-27B-NVFP4`, que mantém módulos sensíveis em 8 bits.
-5. FP8 oficial do Qwen, se existir (`Qwen/Qwen3.8-27B-FP8`), como meio-termo entre qualidade e velocidade.
-6. `Qwen/Qwen3.8-27B` em BF16 (~54 GB de pesos), como **referência de qualidade**: cabe na placa, mas sobra pouco KV cache.
+- **Revisão.** Use a revisão que o dono validou, `dbb8f445`, e registre o hash completo do commit e o checksum dos arquivos baixados. Se essa revisão não existir mais ou não baixar, **pare e pergunte** antes de usar outra; não troque de revisão em silêncio.
+- **Comando.** O da seção 2.1, que é a configuração validada, com as flags exatamente como estão (`--quantization nvfp4`, `--speculative-config '{"method":"qwen3_5_mtp","num_speculative_tokens":3}'`, parsers, FP8 no KV cache, prefix caching). Confira cada flag e o nome do método MTP com `vllm serve --help` da versão instalada e com o model card, e use a sintaxe que essa versão aceitar, mantendo o mesmo significado.
+- **O que pode mudar, e só se for preciso.** Para o servidor subir ou aproveitar a GPU livre:
+  - `--gpu-memory-utilization` entre 0,90 e 0,95, já que a GPU não tem outros processos desde a fase 0 (se faltar memória, desça);
+  - `--max-model-len` (131072, ou o maior valor que ainda deixe KV cache para N_MAX sessões);
+  - `--max-num-seqs` conforme a calibração da seção 5.0a;
+  - a correção do SM120 (`--quantization modelopt_fp4 --block-size 128`) só se o comando padrão travar na inicialização.
 
-Confira no Hugging Face se cada um existe, a revisão, a licença e o model card; registre o hash de cada download. Consulte a receita oficial do vLLM para essa placa (`recipes.vllm.ai/Qwen/Qwen3.8-27B`, alvo RTX Pro 6000) e o model card de cada checkpoint, e use as flags que eles indicam: nome do método MTP, quantização, parsers.
-
-**Configuração a ajustar, com o candidato fixo:**
-- MTP `num_speculative_tokens` em 1, 2, 3 e 4;
-- `kv-cache-dtype` `fp8` contra `auto`;
-- `gpu-memory-utilization` entre 0,85 e 0,95 (a RTX 6000 não tem a memória unificada da DGX Spark; como a GPU está livre de outros processos desde o item 7 da fase 0, pode subir enquanto estável; se faltar memória, desça);
-- `max-num-batched-tokens` e chunked prefill;
-- `max-num-seqs` 32 e 64;
-- `max-model-len` 131072, ou 262144 se couber com KV suficiente para N_MAX sessões;
-- a correção do SM120 (`--quantization modelopt_fp4 --block-size 128` com `VLLM_HAS_FLASHINFER_CUBIN=1`) só se o padrão travar.
-
-Use a versão do vLLM mais recente estável que a receita indica (no mínimo 0.29.0) com CUDA 13.x, e registre o driver.
-
-**Como medir.** Nada daqui usa os exercícios do jg-eng-tests nem tarefas dos benchmarks públicos, para não contaminar a comparação.
-- **Qualidade:**
-  - `fh validate-vllm` (tool calls, vazamento de raciocínio, contexto longo);
-  - o corpus embutido do `fh` (`fh eval --tasks` com as tarefas do repositório);
-  - um subconjunto fixo de 40 tarefas do Aider polyglot (`scripts/polyglot_to_tasks.py`, semente registrada), com o `fh` no modo 1 agente.
-- **Velocidade:** tok/s por fluxo com 1 sessão, tok/s agregado com 8 sessões, TTFT P50/P90, aceitação do MTP e KV cache disponível, medidos com `vllm bench serve` usando entradas e saídas de tamanho parecido com o de agentes (prompt de 20–60k tokens com prefixo compartilhado, saída de 500–2000).
-
-**Regra de escolha.**
-1. Elimine o candidato cuja aprovação no Aider polyglot ficar abaixo da BF16 com significância (McNemar exato, p < 0,05), ou que errar tool calls em mais de 1% das chamadas.
-2. Entre os que sobram, escolha o de maior tok/s agregado com 8 sessões, desde que o tok/s por fluxo com 1 sessão não caia mais de 10% em relação ao melhor.
-3. Com o checkpoint escolhido, fixe a combinação de flags com maior tok/s agregado que não aumente erros nem diminua a aprovação.
-
-Grave tudo em `relatorio/escolha_modelo.md`: tabela de candidatos × qualidade × velocidade, a escolha e o motivo. O comando exato vencedor substitui o comando abaixo em todas as fases e vai para o `MANIFEST.json`. Se nenhum candidato bater a linha de base, use a linha de base e registre.
-
-**Tempo-limite desta etapa:** cerca de 6 h. Se não der para medir todos os candidatos, priorize 1, 3, 4 e 6, nessa ordem.
+  Nada disso muda o modelo nem o MTP. Registre cada ajuste e o motivo no `MANIFEST.json`.
+- **Verificação de que é o mesmo modelo validado (bloqueia a fase 1).** Depois de subir, rode uma sessão de geração com prompts de agente (entrada de 20 a 60 mil tokens, com prefixo compartilhado, saída de 500 a 2000) e compare com a referência do dono: **122,1 tok/s por fluxo** e **aceitação do draft de 75,7%**, lida do `/metrics`. Aceite uma variação de até 15% em cada uma. Se ficar fora disso, investigue o ambiente (versão do vLLM e do CUDA, driver, `VLLM_HAS_FLASHINFER_CUBIN`, clock da GPU, processos ainda na GPU) e corrija o ambiente; **não** troque o modelo nem o MTP. Se não resolver, pare e pergunte.
+- **Fixo para sempre.** Depois dessa verificação, o servidor só reinicia com o mesmo comando (regras 4 e 5). Qualquer outra configuração é variante com nome próprio (fase 8).
 
 ### 2.1 Configuração de referência (linha de base)
 Base: Qwen3.8-27B em NVFP4 (checkpoint `nvidia/Qwen3.8-27B-NVFP4`, revisão `dbb8f445`) com MTP=3, vLLM 0.29.0 ou superior, CUDA 13.x. Resultado de referência nessa configuração: 122,1 tok/s por fluxo (52,2 sem MTP) e aceitação do draft de 75,7%.

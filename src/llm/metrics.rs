@@ -59,7 +59,8 @@ pub fn summarize(raw: HashMap<String, f64>) -> VllmMetrics {
     let mut per: Vec<(usize, f64)> = Vec::new();
     for (k, v) in &raw {
         if let Some(m) = PER_POS.captures(k) {
-            per.push((m[1].parse().unwrap_or(0), *v));
+            // draft positions are single digits in practice; a bogus label must not size a huge vector
+            per.push((m[1].parse::<usize>().unwrap_or(0).min(63), *v));
         }
     }
     let per_pos = if per.is_empty() {

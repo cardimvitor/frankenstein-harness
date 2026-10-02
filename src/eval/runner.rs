@@ -183,7 +183,7 @@ pub async fn run_one(cfg: &Config, env: &Env, t: &EvalTask, runner: &str, rep: u
 
 fn median(a: &[f64]) -> f64 {
     let mut s = a.to_vec();
-    s.sort_by(|x, y| x.partial_cmp(y).unwrap());
+    s.sort_by(|x, y| x.total_cmp(y));
     if s.is_empty() { 0.0 } else if s.len() % 2 == 1 { s[s.len() / 2] } else { (s[s.len() / 2 - 1] + s[s.len() / 2]) / 2.0 }
 }
 

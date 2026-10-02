@@ -183,6 +183,19 @@ async fn reviewer_blocker_with_valid_citation_forces_a_fix_round() {
     assert_eq!(m.requests()[0]["response_format"]["type"], "json_schema");
 }
 
+#[tokio::test]
+async fn a_test_command_that_found_no_tests_is_unverified_not_pass() {
+    let d = repo(&[("a.txt", "x"), (".fh/verify.json", r#"[{"name":"unittest","cmd":"echo NO TESTS RAN; exit 5","kind":"test"}]"#)]);
+    let cp = Checkpoints::new(d.path());
+    let base = cp.create("t").await.unwrap();
+    std::fs::write(d.path().join("a.txt"), "y").unwrap();
+    let fp = fingerprint(d.path());
+    let ctx = VerifyCtx { cwd: d.path(), cp: &cp, base: &base, fp: &fp, llm: None, acceptance: &[], allowed_globs: None, max_rounds: 1, cancel: None, lsp: None };
+    let rep = verify_loop(&ctx, |_, _| async {}).await;
+    assert_eq!(rep.verdict, Verdict::Unverified, "{:?}", rep.reason);
+    assert!(rep.rounds[0].checks.iter().any(|c| c.name == "unittest" && c.status == Status::Skipped));
+}
+
 #[test]
 fn exit_5_without_tests_is_not_a_failure() {
     assert!(no_tests_found(Some(5), "ok\n\nRan 0 tests in 0.000s\n\nNO TESTS RAN\n", ""));

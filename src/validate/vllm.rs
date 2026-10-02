@@ -56,12 +56,12 @@ fn pct(x: f64) -> String {
 }
 fn median(a: &[f64]) -> f64 {
     let mut s = a.to_vec();
-    s.sort_by(|x, y| x.partial_cmp(y).unwrap());
+    s.sort_by(|x, y| x.total_cmp(y));
     if s.is_empty() { 0.0 } else { s[s.len() / 2] }
 }
 fn p95(a: &[f64]) -> f64 {
     let mut s = a.to_vec();
-    s.sort_by(|x, y| x.partial_cmp(y).unwrap());
+    s.sort_by(|x, y| x.total_cmp(y));
     if s.is_empty() { 0.0 } else { s[((0.95 * s.len() as f64).ceil() as usize).clamp(1, s.len()) - 1] }
 }
 

@@ -26,13 +26,8 @@ COMO TRABALHAR
    - o que falta para cumprir as decisões do dono;
    - os riscos de tempo, disco e GPU.
 
-   Confira de verdade, não só lendo: versões e nomes de datasets (Harbor Hub, repositórios dos benchmarks), existência dos checkpoints no Hugging Face, flags do vLLM instalado, e se os scripts e adaptadores do repositório rodam (`cargo test --release`, `python3 -m py_compile integrations/harbor/fh_harbor/*.py`). Corrija o que for claramente erro de digitação ou de comando na sua cópia de trabalho do plano (WORKDIR/plano-ajustado.md) e anote cada mudança. Mudanças que alteram uma decisão minha, ou que mudam o que é comparado, você me pergunta antes. Depois siga.
-4. Com a GPU livre e os downloads prontos, configure a melhor combinação possível para esta GPU (decisão 8 e seção 2.0 do documento). Use os checkpoints oficiais do Qwen3.8-27B próprios para o Blackwell:
-   - NVFP4 da NVIDIA (`nvidia/Qwen3.8-27B-NVFP4`) e as outras quantizações fiéis listadas;
-   - o FP8 oficial, se existir;
-   - o BF16 como referência de qualidade.
-
-   Ajuste o vLLM (MTP, KV cache, memória, lote, contexto) seguindo a receita oficial do vLLM para a RTX Pro 6000 e os model cards. Meça qualidade e velocidade sem usar nenhuma tarefa da avaliação, escolha pela regra da seção 2.0 e fixe o vencedor para a sessão inteira. Nada de fine-tunes, "uncensored" ou merges da comunidade.
+   Confira de verdade, não só lendo: versões e nomes de datasets (Harbor Hub, repositórios dos benchmarks), existência do checkpoint e da revisão `dbb8f445` no Hugging Face, flags do vLLM instalado, e se os scripts e adaptadores do repositório rodam (`cargo test --release`, `python3 -m py_compile integrations/harbor/fh_harbor/*.py`). Corrija o que for claramente erro de digitação ou de comando na sua cópia de trabalho do plano (WORKDIR/plano-ajustado.md) e anote cada mudança. Mudanças que alteram uma decisão minha, ou que mudam o que é comparado, você me pergunta antes. Depois siga.
+4. Com a GPU livre e o download pronto, suba o modelo fixo (decisão 8 e seção 2.0 do documento): `nvidia/Qwen3.8-27B-NVFP4` (https://huggingface.co/nvidia/Qwen3.8-27B-NVFP4), revisão `dbb8f445`, com MTP 3. É o modelo que eu já validei: não compare outros checkpoints, não varra o MTP, não baixe BF16, FP8 nem quantizações da comunidade. Use o comando da seção 2.1, confira cada flag com `vllm serve --help`, ajuste só o que a máquina exigir (memória da GPU, contexto, `max-num-seqs`) e registre. Depois rode a verificação da seção 2.0: com prompts de agente, a geração precisa ficar perto de 122,1 tok/s por fluxo e 75,7% de aceitação do MTP (até 15% de diferença). Se ficar fora, corrija o ambiente, não o modelo; se não resolver, me pergunte. Fixe o comando para a sessão inteira.
 5. Escreva WORKDIR/PLANO.md: a lista numerada de todos os passos do documento, fase por fase, até EXECUTAR_ATE, cada passo com o critério de "pronto" (o que precisa existir ou passar). Marque o que depende de decisão minha. Depois execute o plano na ordem, sem pular fases.
 6. Mantenha WORKDIR/PROGRESSO.md atualizado a cada passo concluído: o que foi feito, comando principal, resultado (números reais), arquivos gerados, problemas. Mantenha também o WORKDIR/state.json que o documento pede, para retomar sem refazer nada se a sessão cair. Ao reiniciar, leia PROGRESSO.md e state.json primeiro e continue de onde parou.
 7. Fim de cada fase: confira os critérios de "pronto" daquela fase e escreva um resumo curto em PROGRESSO.md (o que passou, o que falhou, números principais). Só então comece a próxima. As fases 0 e 1 bloqueiam: se algo falhar ali, resolva antes de seguir (decisão 3 do documento).
@@ -43,7 +38,7 @@ COMO TRABALHAR
 
 QUANDO PARAR E ME PERGUNTAR
 - O HEAD do jg-eng-tests não é 36cbe4741e5730fae876fae3bff6fa167fb18cb7.
-- Nenhum checkpoint candidato sobe no vLLM desta máquina, nem a configuração de referência do documento.
+- O modelo `nvidia/Qwen3.8-27B-NVFP4` na revisão `dbb8f445` não baixa ou não sobe no vLLM desta máquina com MTP 3, ou a velocidade e a aceitação do MTP ficam fora da referência (122,1 tok/s por fluxo, 75,7%) mesmo depois de corrigir o ambiente.
 - Falta algo que só eu posso dar (credencial, token do Hugging Face para um checkpoint restrito, acesso, instalação que exige root que você não tem, espaço em disco).
 - Falta acesso ou chave que só eu posso dar para um benchmark (conjunto privado do CWE-bench, chaves dos juízes do CWE-bench ou do avaliador do Vibe Code Bench).
 - Um processo que você ia parar é de outro usuário com sessão ativa ou parece um serviço de produção, ou a VRAM não libera nem com o reset da GPU (pode exigir reiniciar a máquina).
@@ -61,7 +56,7 @@ O QUE NÃO FAZER
 
 ENTREGA
 Ao terminar (ou ao atingir EXECUTAR_ATE ou um limite), gere os entregáveis de WORKDIR/relatorio/ descritos no documento e me responda com:
-0. Resumo da revisão (REVISAO.md): o que estava errado no plano e o que você ajustou. O checkpoint e o comando do vLLM escolhidos, com os números de qualidade e velocidade que decidiram.
+0. Resumo da revisão (REVISAO.md): o que estava errado no plano e o que você ajustou. O comando exato do vLLM (modelo fixo, MTP 3), os ajustes que a máquina exigiu e os números de verificação (tok/s por fluxo e aceitação do MTP) contra a referência.
 A. Ranking final (aprovação final com intervalo de Wilson), e ao lado o ranking só pelo grader.
 B. Frankenstein Harness 1 agente contra modo máximo, com a regra de fan-out.
 C. Benchmarks públicos: nota de cada harness em Terminal-Bench 4.0, DeepSWE v1.1, CWE-bench v1, Vibe Code Bench e FrontierSWE v2, com intervalo, e o que ficou NOT_RUN/UNSUPPORTED em cada um.

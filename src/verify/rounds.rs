@@ -151,7 +151,10 @@ pub async fn run_round(ctx: &VerifyCtx<'_>, st: &mut VerifyState, round: usize) 
     let blocking: Vec<Finding> = findings.iter().filter(|f| is_blocking(f, round, ctx.max_rounds)).cloned().collect();
     st.stats.blockers += blocking.len();
     let det_fail = checks.iter().any(|c| c.status == Status::Fail);
-    let verdict = if det_fail || !blocking.is_empty() { Verdict::Fail } else if has_runnable { Verdict::Pass } else { Verdict::Unverified };
+    // a pass needs a build/test/type command that actually ran and passed: a command that found nothing to run
+    // (skipped) verified nothing, and neither do language-server diagnostics alone
+    let verified = checks.iter().any(|c| c.status == Status::Pass && ctx.fp.verify.iter().any(|v| v.name == c.name && matches!(v.kind, VerifyKind::Test | VerifyKind::Build | VerifyKind::Types)));
+    let verdict = if det_fail || !blocking.is_empty() { Verdict::Fail } else if has_runnable && verified { Verdict::Pass } else { Verdict::Unverified };
     let shown = if blocking.is_empty() { findings.into_iter().filter(|f| f.severity != "minor").collect() } else { blocking };
     let report = RoundReport { round, checks, findings: shown, dropped_findings: dropped, reviewer_ran: ran, verdict };
     st.rounds.push(report.clone());

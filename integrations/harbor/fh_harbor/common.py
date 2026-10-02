@@ -41,13 +41,19 @@ def run_command(instruction: str, *, logs_dir: str, max_concurrency: int | None,
     if extra_flags:
         flags += " " + extra_flags
     conc = f"FH_MAX_CONCURRENCY={int(max_concurrency)} " if max_concurrency else ""
+    result = logs_dir + "/" + RESULT_FILE
     return (
         f"mkdir -p {shlex.quote(logs_dir)} && "
         f"{conc}{FH_BIN} run {flags} {shlex.quote(instruction)} "
         f"> {shlex.quote(logs_dir + '/' + RESULT_FILE)} 2> {shlex.quote(logs_dir + '/' + LOG_FILE)}; "
         "code=$?; "
-        # exit 1 (verification failed) and 3 (unverified) are task outcomes, not adapter errors; the verifier decides
-        'if [ "$code" -le 3 ]; then exit 0; else exit "$code"; fi'
+        # 0 (pass), 1 (verification failed) and 3 (unverified) are task outcomes: the benchmark's verifier decides.
+        # Anything else (2 = bad usage, 130 = interrupted, a crash) is an adapter error and must surface.
+        'if [ "$code" -ne 0 ] && [ "$code" -ne 1 ] && [ "$code" -ne 3 ]; then exit "$code"; fi; '
+        # fh never reached the model (endpoint down, wrong key, proxy refusal): that is infrastructure, not a failed
+        # attempt, so exit 4 and let the runner record an error (and retry) instead of a zero score
+        f"if grep -q '\"verdict\": \"error\"' {shlex.quote(result)} 2>/dev/null && grep -q '\"requests\": 0' {shlex.quote(result)} 2>/dev/null; then exit 4; fi; "
+        "exit 0"
     )
 
 
