@@ -25,7 +25,7 @@ Usage:
   fh run \"<task>\" [options]   run one task
   fh serve [--port N]         local web UI (127.0.0.1 only)
   fh --version                print the version
-  fh delegate \"<task>\"      27B plans, a worker model (FH_WORKER_ENDPOINT/FH_WORKER_MODEL) writes once, the main model verifies
+  fh delegate \"<task>\" [--no-harness]  27B plans, a worker model (FH_WORKER_ENDPOINT/FH_WORKER_MODEL) writes once, the main model verifies (full fh loop, or one no-tools request with --no-harness)
   fh direct \"<task>\"        the model alone, no harness (one request, edits applied as written): the baseline
   fh doctor                   check endpoint, model, auth, metrics, sandbox
   fh validate-vllm [options]  measure MTP, prefix cache, tool calls, long context, concurrency
@@ -571,6 +571,28 @@ pub async fn main(argv: Vec<String>) -> i32 {
                     "delegate": crate::delegate::report_json(&prep)});
                 println!("{}", serde_json::to_string_pretty(&r).unwrap());
                 return 1;
+            }
+            if args.has("no-harness") {
+                // pure 27B+9B: the verifier is one no-tools request, applied as written
+                let t0 = std::time::Instant::now();
+                let v = crate::delegate::verify_pure(&cfg, &env, &cwd, task, &prep).await;
+                let mut changed = prep.changed.clone();
+                for c in &v.changed {
+                    if !changed.contains(c) {
+                        changed.push(c.clone());
+                    }
+                }
+                if args.has("commit") && !changed.is_empty() {
+                    crate::util::proc::run_simple("git add -A && git -c user.name=fh -c user.email=fh@local commit -qm 'delegate: 27B+9B, no harness'", &cwd, 30_000).await;
+                }
+                let n = prep.planner.requests + prep.worker.requests + v.stats.requests;
+                let verdict = if v.error.is_some() { "error" } else if changed.is_empty() { "failed" } else { "applied" };
+                let r = serde_json::json!({"verdict": verdict, "reason": v.error.clone().unwrap_or_default(), "final": v.reply.chars().take(3000).collect::<String>(), "changed": changed, "rounds": 0, "workers": [],
+                    "llm": {"requests": n, "promptTokens": prep.planner.prompt_tokens + prep.worker.prompt_tokens + v.stats.prompt_tokens, "completionTokens": prep.planner.completion_tokens + prep.worker.completion_tokens + v.stats.completion_tokens, "cachedTokens": prep.planner.cached_tokens + prep.worker.cached_tokens + v.stats.cached_tokens, "toolCalls": 0},
+                    "timings": {"totalMs": t0.elapsed().as_millis() as u64},
+                    "delegate": crate::delegate::report_json(&prep), "verifier": {"edits": v.edits, "changed": v.changed, "failed": v.failed.iter().map(|(f, w)| serde_json::json!({"path": f, "why": w})).collect::<Vec<_>>(), "stats": crate::delegate::stats_json(&v.stats)}});
+                println!("{}", serde_json::to_string_pretty(&r).unwrap());
+                return if verdict == "applied" { 0 } else { 1 };
             }
             let r = engine.run_task(&crate::delegate::verification_task(task, &prep), opts(Some(cancel))).await;
             engine.drain(20_000).await;

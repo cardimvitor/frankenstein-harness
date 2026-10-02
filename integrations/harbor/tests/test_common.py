@@ -187,6 +187,10 @@ class Modes(unittest.TestCase):
         d = common.run_command("fix", logs_dir="/logs/agent", max_concurrency=None, commit=True, delegate=True)
         self.assertIn(f"{common.FH_BIN} delegate --auto --yes --mode yolo --json --commit fix", d)
 
+    def test_pure_delegate_adds_no_harness(self):
+        d = common.run_command("fix", logs_dir="/logs/agent", max_concurrency=None, commit=False, pure=True)
+        self.assertIn(f"{common.FH_BIN} delegate --auto --yes --mode yolo --json --no-harness fix", d)
+
     def test_direct_runs_the_model_alone_and_run_keeps_the_harness_flags(self):
         d = common.run_command("fix 'it'", logs_dir="/logs/agent", max_concurrency=None, commit=True, direct=True)
         self.assertIn(f"{common.FH_BIN} direct --commit 'fix '\"'\"'it'\"'\"''", d)

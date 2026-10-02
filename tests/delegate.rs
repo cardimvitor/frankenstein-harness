@@ -1,5 +1,5 @@
 use fh::config::{load_config, Config, Env};
-use fh::delegate::{prepare, verification_task, worker_config};
+use fh::delegate::{prepare, verification_task, verify_pure, worker_config};
 use fh::testkit::{self, Scripted};
 use std::path::Path;
 
@@ -78,4 +78,29 @@ async fn a_dead_worker_is_an_error_and_a_reply_without_edits_leaves_the_workspac
     let p2 = prepare(&c, &w2, &env2, d.path(), "fix").await;
     assert!(p2.error.as_deref().unwrap_or("").starts_with("worker"), "{:?}", p2.error);
     assert_eq!(p2.worker.requests, 0);
+}
+
+#[tokio::test]
+async fn pure_verifier_is_one_toolless_request_that_fixes_or_accepts() {
+    let main = testkit::start(0, None).await;
+    let work = testkit::start(0, None).await;
+    main.push(Scripted::text("plan"));
+    work.push(Scripted::text(EDIT));
+    let d = repo();
+    let env = env_for(&work.url);
+    let c = cfg(&main.url);
+    let w = worker_config(&c, &env).unwrap();
+    let p = prepare(&c, &w, &env, d.path(), "Fix mathx.py").await;
+    main.push(Scripted::text("mathx.py\n<<<<<<< SEARCH\n        total += i\n=======\n        total += i  # inclusive\n>>>>>>> REPLACE\n"));
+    let v = verify_pure(&c, &env, d.path(), "Fix mathx.py", &p).await;
+    assert!(v.error.is_none() && v.changed == vec!["mathx.py".to_string()] && v.stats.requests == 1, "{:?}", v.error);
+    assert!(std::fs::read_to_string(d.path().join("mathx.py")).unwrap().contains("inclusive"));
+    let reqs = main.requests();
+    assert_eq!(reqs.len(), 2, "planner + verifier on the main model; the worker is never called again");
+    assert!(reqs[1].get("tools").is_none());
+    assert!(reqs[1]["messages"].to_string().contains("range(a, b + 1)"), "the verifier sees the worker's edit");
+    assert_eq!(work.requests().len(), 1);
+    main.push(Scripted::text("NO CHANGES"));
+    let v2 = verify_pure(&c, &env, d.path(), "Fix mathx.py", &p).await;
+    assert!(v2.error.is_none() && v2.changed.is_empty() && v2.edits == 0);
 }

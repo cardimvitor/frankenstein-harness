@@ -3,7 +3,7 @@
 Cole o bloco numa sessão de agente com terminal na máquina da GPU. Não cole chaves; exporte-as antes.
 
 ```text
-Você vai conduzir, do começo ao fim, uma sessão separada de validação: as dez configurações (modelo-direto, fh-nomem, fh-mem1, fh-memmax, opencode, qwen-code, claude-code, deepseek, delegado-27b-9b e modelo9b-direto) rodando tarefas extraídas do repositório https://github.com/akitaonrails/ai-jail, e a avaliação do próprio conjunto de testes. Você é a LLM operadora e juíza; o Qwen nunca julga nada.
+Você vai conduzir, do começo ao fim, uma sessão separada de validação: as onze configurações (modelo-direto, fh-nomem, fh-mem1, fh-memmax, opencode, qwen-code, claude-code, deepseek, modelo9b-direto, delegado-puro-27b-9b e delegado-fh-27b-9b) rodando tarefas extraídas do repositório https://github.com/akitaonrails/ai-jail, e a avaliação do próprio conjunto de testes. Você é a LLM operadora e juíza; o Qwen nunca julga nada.
 
 DADOS
 - Harness: https://github.com/cardimvitor/frankenstein-harness, branch ccr-3bc51f62-prkdq0 (use as credenciais git desta máquina). Especificação desta sessão: docs/VALIDACAO_AI_JAIL.md. Ela herda a mecânica de docs/VALIDACAO_JG_ENG_TESTS_V2.md; onde calar, vale o V2, e a seção "Decisões do dono" dele vale acima de tudo (só o resultado final conta; o juiz é você; nenhum teste é pulado).
@@ -17,8 +17,8 @@ COMO TRABALHAR
 3. Escreva WORKDIR/REVISAO.md com o que estiver errado, ambíguo ou impossível em docs/VALIDACAO_AI_JAIL.md (confira de verdade: o HEAD do ai-jail, o rust-toolchain, se bwrap e user namespaces funcionam neste host, se `mine_commit_tasks.py` e seus testes rodam). Mudanças que alteram uma decisão minha, pergunte antes.
 4. Minere, construa e valide todas as candidatas (seção 3 do documento); você escreve as instruções no estilo de issue, sem vazar o diff, com as linhas "Interface"; registre as tarefas inválidas com o motivo.
 5. Rode a suíte limpa 3 vezes no HEAD (determinismo) antes de começar; sem bwrap/userns o grader está errado e você corrige o ambiente antes.
-6. Calibre (ou reaproveite) o N_MAX, rode as dez configurações em paralelo e isoladas, o fh na frente, depois o passe de tempo.
+6. Calibre (ou reaproveite) o N_MAX, rode as onze configurações em paralelo e isoladas, na ordem da decisão 7 (sem harness, fh, outros), depois o passe de tempo.
 7. Corrija com o grader do operador, faça a revisão às cegas (com o critério extra de não enfraquecer a segurança do sandbox) e escreva os entregáveis da seção 7, inclusive avaliacao-do-conjunto.md.
 8. Mantenha PROGRESSO.md e state.json atualizados para retomar. Nunca imprima nem grave chaves. Não invente resultados; um resultado ruim do fh é um achado. Não altere o fh durante a execução que conta. Não copie conteúdo do ai-jail (GPL-3.0) para repositório nenhum.
-9. Ao fim, responda com: resumo por configuração (fh na frente), cadeia de ablação, resultado da avaliação do conjunto, problemas, e o tempo gasto.
+9. Ao fim, responda com: resumo por configuração (ordem da decisão 7), cadeia de ablação, resultado da avaliação do conjunto, problemas, e o tempo gasto.
 ```

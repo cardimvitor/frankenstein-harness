@@ -6,6 +6,8 @@
 //!      SEARCH/REPLACE blocks (the same format as `fh direct`), applied as written;
 //!   3. the planner then runs the normal fh loop on the result (tools, checks, fixes) with the worker's attempt as the
 //!      starting state. The worker is never called a second time, whatever the verification finds.
+//! With `--no-harness` step 3 is a single no-tools request instead ([`verify_pure`]): the main model sees the repository
+//! after the worker's edits and answers with SEARCH/REPLACE fixes (or NO CHANGES), applied as written.
 //! Steps 1 and 2 live here; step 3 is the engine run that `cli.rs` starts with [`verification_task`].
 
 use crate::config::{Config, Env};
@@ -98,4 +100,34 @@ pub fn report_json(p: &Prepared) -> Value {
         "edits": p.edits, "changed": p.changed, "failed": p.failed.iter().map(|(f, w)| json!({"path": f, "why": w})).collect::<Vec<_>>(),
         "error": p.error, "planner": stats_json(&p.planner), "worker": stats_json(&p.worker), "plan": p.plan.chars().take(3000).collect::<String>(),
     })
+}
+
+const VERIFIER_SYSTEM: &str = "You are the lead engineer reviewing a smaller worker model's attempt. You are given the repository AFTER the worker's edits, the task, and your own earlier work order. You cannot run code or commands, so review by reading: check that the task is fully and correctly implemented, that nothing the task needs is missing, and that the worker did not break anything else. If everything is correct reply with exactly NO CHANGES. Otherwise reply ONLY with the fixes, as SEARCH/REPLACE blocks (the SEARCH text must match the file exactly once; to create a file leave SEARCH empty):\n\npath/to/file\n<<<<<<< SEARCH\nexact existing lines\n=======\nreplacement lines\n>>>>>>> REPLACE\n\nThe worker will not be called again, so fix everything yourself.";
+
+pub struct Verified {
+    pub reply: String,
+    pub changed: Vec<String>,
+    pub failed: Vec<(String, String)>,
+    pub edits: usize,
+    pub stats: LlmStats,
+    pub error: Option<String>,
+}
+
+/// `--no-harness` step 3: one request to the main model, no tools, fixes applied as written.
+pub async fn verify_pure(cfg: &Config, env: &Env, cwd: &Path, task: &str, p: &Prepared) -> Verified {
+    let llm = LlmClient::new(cfg.clone(), env.clone());
+    let budget = (cfg.context_window as f64 * 3.0 * 0.6) as usize;
+    let (snapshot, _, _) = build_context(cwd, task, budget);
+    let user = format!("{snapshot}\n\nTask:\n{task}\n\nYour work order:\n{}\n\nThe worker edited: {}", p.plan, if p.changed.is_empty() { "nothing (no edit applied)".to_string() } else { p.changed.join(", ") });
+    let max_tokens = (cfg.context_window as u32 / 4).clamp(4096, 32768);
+    let res = llm.chat(ChatOptions { messages: vec![Message::system(VERIFIER_SYSTEM), Message::user(user)], thinking: Thinking::High, max_tokens: Some(max_tokens), ..Default::default() }).await;
+    let stats = llm.stats();
+    match res {
+        Err(e) => Verified { reply: String::new(), changed: vec![], failed: vec![], edits: 0, stats, error: Some(format!("verifier: {e}")) },
+        Ok(r) => {
+            let edits = parse_edits(&r.content);
+            let (changed, failed) = apply_edits(cwd, &edits);
+            Verified { reply: r.content, changed, failed, edits: edits.len(), stats, error: None }
+        }
+    }
 }

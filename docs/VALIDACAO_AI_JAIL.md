@@ -1,11 +1,11 @@
-# Sessão separada: as dez configurações no repositório ai-jail (e avaliação do próprio conjunto de testes)
+# Sessão separada: as onze configurações no repositório ai-jail (e avaliação do próprio conjunto de testes)
 
 Documento autônomo, executado por outra LLM numa **sessão própria**, depois (ou fora) da sessão principal (`docs/VALIDACAO_JG_ENG_TESTS_V2.md`). Ele **herda a mecânica** do plano V2 e só define o que é específico do ai-jail. Onde este documento calar, vale o plano V2 (e a seção "Decisões do dono" dele vale acima de tudo, incluindo "só vale o resultado final", "o juiz é a LLM operadora, nunca o Qwen" e **"nenhum teste é pulado"**).
 
 Repositório avaliado: https://github.com/akitaonrails/ai-jail (Rust, licença GPL-3.0). Fixe o commit do HEAD no início e registre. **Licença:** não copie conteúdo do ai-jail para nossos repositórios nem para o relatório além de trechos curtos de citação; as tarefas ficam só em WORKDIR e não são commitadas em lugar nenhum.
 
 ## 1. Objetivo
-1. Rodar **as mesmas dez configurações** (`modelo-direto`, `fh-nomem`, `fh-mem1`, `fh-memmax`, `opencode`, `qwen-code`, `claude-code`, `deepseek`, mais `delegado-27b-9b` (27B+9B) e `modelo9b-direto`; o `fh` na frente) em tarefas reais extraídas da história do ai-jail, e comparar o efeito de cada harness sobre o modelo fixo `nvidia/Qwen3.8-27B-NVFP4` (MTP 3).
+1. Rodar **as mesmas onze configurações** (`modelo-direto`, `fh-nomem`, `fh-mem1`, `fh-memmax`, `opencode`, `qwen-code`, `claude-code`, `deepseek`, mais `modelo9b-direto`, `delegado-puro-27b-9b` e `delegado-fh-27b-9b`; na ordem da decisão 7 do plano V2: sem harness, depois `fh`, depois os outros) em tarefas reais extraídas da história do ai-jail, e comparar o efeito de cada harness sobre o modelo fixo `nvidia/Qwen3.8-27B-NVFP4` (MTP 3).
 2. **Avaliar o próprio conjunto**: dizer quais tarefas e testes são confiáveis (determinísticos, sem dependência escondida do ambiente, sem ambiguidade), para que a nota signifique algo.
 
 Entregáveis numa pasta separada `relatorio-ai-jail/` (nunca misturada à do jg-eng-tests nem à do DeepSWE).
@@ -28,19 +28,19 @@ O ai-jail não traz uma suíte de tarefas pronta; as tarefas saem dos commits (e
    - Rejeite com evidência as tarefas implausíveis (por exemplo, um commit que muda 157 testes de uma vez: a instrução não consegue descrever o comportamento exigido).
 4. Ambiente de **correção** (grader), no host ou num contêiner privilegiado do operador: Rust **1.97.1** (o `rust-toolchain.toml` do projeto fixa), `bubblewrap` instalado em local confiável e **user namespaces habilitados**, `cargo test --features test-hooks`. Sem o `bwrap`, um teste falha e envenena um mutex, o que derruba 92 testes em cascata (`PoisonError`): verifique `bwrap --version` e a execução da suíte inteira no HEAD limpo **3 vezes** antes de começar, e registre o resultado (base do objetivo 2).
 5. Ambiente do **agente**: contêiner por tarefa e por configuração com o toolchain Rust 1.97.1 pré-instalado, dependências já buscadas (`cargo fetch`/`vendor` no momento da construção da imagem, para rodar sem internet), a árvore de trabalho = o commit pai (`workspace/` da tarefa), sem `.git` do futuro e sem os testes ocultos. Contêineres de agente em geral **não criam user namespaces**: testes que dependem de `bwrap` não rodam ali, e é por isso que a nota vem do grader do operador, nunca do que o agente conseguiu rodar.
-6. **Instrução** de cada tarefa (a única coisa escrita por você): texto no estilo de issue, em inglês (como o repositório), que descreve o sintoma ou a funcionalidade **sem vazar o diff nem os nomes dos testes**. Ela precisa listar, em linhas separadas "Interface", os símbolos públicos que os testes ocultos usam e que não existem na base (saem de `interface_hints` no `task.json`, obtidos dos erros de compilação na base), senão uma solução correta não compila contra os testes. Revise cada instrução num segundo passe: um leitor sem acesso ao diff consegue implementar a partir dela? Se não, reescreva. Instruções são idênticas para as dez configurações.
+6. **Instrução** de cada tarefa (a única coisa escrita por você): texto no estilo de issue, em inglês (como o repositório), que descreve o sintoma ou a funcionalidade **sem vazar o diff nem os nomes dos testes**. Ela precisa listar, em linhas separadas "Interface", os símbolos públicos que os testes ocultos usam e que não existem na base (saem de `interface_hints` no `task.json`, obtidos dos erros de compilação na base), senão uma solução correta não compila contra os testes. Revise cada instrução num segundo passe: um leitor sem acesso ao diff consegue implementar a partir dela? Se não, reescreva. Instruções são idênticas para as onze configurações.
 7. Salve em `WORKDIR/ai-jail-tasks/<sha>/` (`task.json`, `hidden/`, `workspace/`, `instruction.md`, `validation.json`). Ordem de execução: a da história do git (mais antigo primeiro), igual para todas.
 
 ## 4. Execução
 - Reuse a mecânica do plano V2: seção 5.0 (isolamento e orquestrador com retomada pelo `state.json`), 5.0a (G e rampa), 5.0b (julgamento), 5.0c (passe de tempo: cada configuração sozinha, em 20 tarefas), 5.1 (modos do `fh`), 5.2 (`modelo-direto` via `fh direct`: um pedido com o snapshot do repositório, blocos SEARCH/REPLACE aplicados como escritos) e 5.3 a 5.6 (os outros harnesses, com a mesma amostragem imposta pelo proxy).
-- Prompt de tarefa: idêntico nas dez configurações = instrução + "Trabalhe no repositório do diretório atual; só vale o estado final do disco. Não há acesso à internet." Timeout por tarefa: **1 800 s** (compilação Rust é lenta; os 900 s do jg-eng-tests não servem). Amostragem: temperatura 1,0, top_p 0,95, top_k 20, imposta pelo proxy.
+- Prompt de tarefa: idêntico nas onze configurações = instrução + "Trabalhe no repositório do diretório atual; só vale o estado final do disco. Não há acesso à internet." Timeout por tarefa: **1 800 s** (compilação Rust é lenta; os 900 s do jg-eng-tests não servem). Amostragem: temperatura 1,0, top_p 0,95, top_k 20, imposta pelo proxy.
 - Os agentes veem só `workspace/`. Nunca `hidden/`, `validation.json` nem as tarefas das outras configurações.
 
 ## 5. Correção e julgamento (só a LLM operadora; nunca o Qwen)
 1. Grader objetivo: `mine_commit_tasks.py grade <tarefa> <workspace-do-agente>`. Sobrepõe os testes ocultos (os `tests/*.rs` e o módulo `#[cfg(test)]` do commit **substituindo** o do candidato) e executa. **Passa** quando todos os testes de R rodaram e passaram. Resultado "teste ausente/não rodou" = falha (o agente não pode esconder um teste apagando-o).
-2. Mesmo ambiente de correção para as dez, o mesmo `CARGO_TARGET_DIR` **jamais** compartilhado entre candidatos de configurações diferentes sem tocar nos mtimes (`mine_commit_tasks.py` já usa cópias com mtime novo e `CARGO_INCREMENTAL=0`; não contorne isso).
+2. Mesmo ambiente de correção para as onze, o mesmo `CARGO_TARGET_DIR` **jamais** compartilhado entre candidatos de configurações diferentes sem tocar nos mtimes (`mine_commit_tasks.py` já usa cópias com mtime novo e `CARGO_INCREMENTAL=0`; não contorne isso).
 3. **Revisão às cegas** (5.0b do plano V2): você lê cada diff anonimizado, sem saber a configuração, e dá nota de 0 a 2 em: correção do comportamento pedido, ausência de regressão/gambiarra para passar teste, qualidade. Critério extra **específico do ai-jail**: *a mudança não pode enfraquecer a segurança do sandbox* (relaxar restrições do bwrap/landlock/seccomp, ampliar montagens, ignorar erros de isolamento, `unsafe` novo sem justificativa, trocar uma falha fechada por uma aberta). Qualquer enfraquecimento = reprovado, mesmo com os testes passando.
-4. Reporte por configuração: aprovadas/válidas com intervalo de Wilson 95%, McNemar pareado contra `modelo-direto` e entre as configurações da cadeia (direto → nomem → mem1 → memmax), tokens, requisições, tempo de parede, tok/s do passe de tempo. O `fh` sempre na frente. "Só vale o resultado final" vale aqui também.
+4. Reporte por configuração: aprovadas/válidas com intervalo de Wilson 95%, McNemar pareado contra `modelo-direto` e entre as configurações da cadeia (direto → nomem → mem1 → memmax), tokens, requisições, tempo de parede, tok/s do passe de tempo. A ordem é a da decisão 7 do plano V2. "Só vale o resultado final" vale aqui também.
 
 ## 6. Avaliar o conjunto (o "eval it too")
 Registre em `relatorio-ai-jail/avaliacao-do-conjunto.md`:
@@ -52,13 +52,13 @@ Registre em `relatorio-ai-jail/avaliacao-do-conjunto.md`:
 6. Problemas do próprio ai-jail encontrados durante a avaliação (bug real, teste frágil): anote como achado, sem alterar o repositório.
 
 ## 7. Entregáveis (em `relatorio-ai-jail/`)
-- `relatorio.md` (e `.pdf`): resumo executivo, tabela por configuração (fh na frente), cadeia de ablação, ressalvas.
+- `relatorio.md` (e `.pdf`): resumo executivo, tabela por configuração (ordem da decisão 7), cadeia de ablação, ressalvas.
 - `resultados.csv`/`resultados.json`: uma linha por (tarefa, configuração).
 - `avaliacao-do-conjunto.md` (seção 6), `tarefas/` (apenas `validation.json` e metadados; **sem** conteúdo do ai-jail), `MANIFEST.json` (commit do ai-jail, do `fh`, versões de todas as ferramentas, comando do vLLM, SHA-256 dos artefatos).
 - `PROGRESSO.md` e `state.json` para retomar.
 
 ## 8. Tempo (estimativa, não limite)
-Construção e validação das 86 candidatas: ~2 a 4 h (compilação Rust). Execução: 10 configurações × (tarefas válidas, ~50 a 70) ≈ 400 a 560 execuções de até 30 min; com N_MAX 15 a 20, ~8 a 14 h. Passe de tempo ~1 h. Informe o dono do tempo restante a cada etapa; só ele decide cortar algo.
+Construção e validação das 86 candidatas: ~2 a 4 h (compilação Rust). Execução: 11 configurações × (tarefas válidas, ~50 a 70) ≈ 400 a 560 execuções de até 30 min; com N_MAX 15 a 20, ~8 a 14 h. Passe de tempo ~1 h. Informe o dono do tempo restante a cada etapa; só ele decide cortar algo.
 
 ## 9. Observação sobre o escopo
-Aqui o ai-jail é o **repositório de teste** das dez configurações. A leitura alternativa (rodar os harnesses *dentro* do sandbox do ai-jail, medindo o custo de isolamento) **não está neste plano**; se o dono quiser, vira uma sessão adicional.
+Aqui o ai-jail é o **repositório de teste** das onze configurações. A leitura alternativa (rodar os harnesses *dentro* do sandbox do ai-jail, medindo o custo de isolamento) **não está neste plano**; se o dono quiser, vira uma sessão adicional.

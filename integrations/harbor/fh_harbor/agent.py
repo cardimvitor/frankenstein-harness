@@ -45,7 +45,7 @@ class FhOptions(InstalledAgentOptions):
     state_dir: str | None = Field(default=None, description="Host directory for learned skills shared across trials.")
     memory: str | None = Field(default=None, description='"off": still create and improve skills but never use learned ones (FH_MEMORY).')
     consolidate: bool = Field(default=False, description="Max-parallel mode: scouts/workers, then one agent consolidates (needs max_concurrency > 1).")
-    mode: str = Field(default="run", description='"run" = the full fh harness; "direct" = the model alone, no harness (baseline); "delegate" = 27B plans, a worker model writes once, 27B verifies.')
+    mode: str = Field(default="run", description='"run" = the full fh harness; "direct" = the model alone, no harness (baseline); "delegate" = 27B plans, a worker model writes once, 27B verifies with the full fh loop; "delegate-pure" = the same without any harness (the 27B verifier is one no-tools request).')
     worker_endpoint: str | None = Field(default=None, description="delegate: the worker model's OpenAI-compatible URL (FH_WORKER_ENDPOINT).")
     worker_model: str | None = Field(default=None, description="delegate: the worker model's served name (FH_WORKER_MODEL).")
     worker_context_window: int | None = Field(default=None, description="delegate: the worker's context window (FH_WORKER_CONTEXT_WINDOW).")
@@ -105,7 +105,7 @@ class FrankensteinHarness(BaseInstalledAgent):
             env["FH_MEMORY"] = mem
         if self._opt("consolidate"):
             env["FH_CONSOLIDATE"] = "1"
-        if self._opt("mode") == "delegate":
+        if self._opt("mode") in ("delegate", "delegate-pure"):
             for name, opt in (("FH_WORKER_ENDPOINT", "worker_endpoint"), ("FH_WORKER_MODEL", "worker_model"), ("FH_WORKER_CONTEXT_WINDOW", "worker_context_window")):
                 v = common.setting(self._opt(opt), name)
                 if v:
@@ -146,7 +146,7 @@ class FrankensteinHarness(BaseInstalledAgent):
         try:
             await self.exec_as_agent(
                 environment,
-                command=common.run_command(instruction, logs_dir=logs, max_concurrency=int(max_conc) if max_conc else None, commit=commit, direct=self._opt("mode") == "direct", delegate=self._opt("mode") == "delegate"),
+                command=common.run_command(instruction, logs_dir=logs, max_concurrency=int(max_conc) if max_conc else None, commit=commit, direct=self._opt("mode") == "direct", delegate=self._opt("mode") in ("delegate", "delegate-pure"), pure=self._opt("mode") == "delegate-pure"),
                 env=env,
             )
         finally:
