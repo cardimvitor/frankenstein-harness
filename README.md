@@ -76,6 +76,7 @@ Override what gets verified with `.fh/verify.json`: `[{"name":"build","cmd":"dot
 |---|---|
 | `fh` / `fh tui` | full-screen terminal UI: streaming chat, plan/question/approval cards, verification and files panels, skill notices, mode switches; `fh --plain` or `fh chat` for a line-based chat |
 | `fh run "<task>"` | one task; `--auto`, `--mode plan\|ask\|auto-edit\|yolo`, `--yes`, `--plan-only`, `--commit`, `--keep`, `--sandbox`, `--json` |
+| `fh direct "<task>"` | the model alone, no harness: one request with a repository snapshot, SEARCH/REPLACE edits applied as written; no tools, loop, verification or skills. The baseline other harnesses are measured against |
 | `fh serve` | local web UI: chat, streamed thinking, plan approval and questions, diffs, command output, skill notices, verification status, mode switch |
 | `fh doctor` | connectivity and configuration check |
 | `fh validate-vllm` | measure MTP acceptance, prefix cache, tool-call reliability, long context, concurrency, cancellation |
@@ -89,6 +90,12 @@ Override what gets verified with `.fh/verify.json`: `[{"name":"build","cmd":"dot
 | `fh activity`, `fh history [skill]` | skill activity notices; version history with hashes and diffs of learned skills |
 | `fh stats` | runtime statistics: verdicts, rounds, tokens per task, reviewer quality |
 | `fh auth set\|clear\|status` | keep the API key in the OS keychain (Linux `secret-tool`, macOS Keychain) instead of an env var |
+
+## Modes for ablations
+
+- **`--no-memory`** (or `FH_MEMORY=off`, config `"memory": "off"`): fh still creates, improves and enriches skills after every verified task, but learned skills are never put in the prompt (builtin framework packs stay). Each result lists the learned skills it withheld (`skillsWithheld`). Comparing it with the default isolates what using the memory buys.
+- **`--consolidate`** (or `FH_CONSOLIDATE=1`, config `"consolidate": true`, needs `maxConcurrency` > 1): maximum parallelism inside a task with one agent that consolidates everything. When the work splits into file-disjoint parts, workers run in parallel and the consolidating agent reviews and reconciles the combined result. When it does not (a single issue), up to four read-only scouts (plan mode: they cannot edit) investigate different angles in parallel (locate, tests, impact, solution) and return findings and a proposed solution; one agent then consolidates the reports, implements one coherent change and verifies it. See [docs/FANOUT.md](docs/FANOUT.md).
+- **`FH_SHARED_STORE=1`**: several users share one skill store (group-writable setgid directory; local disk only). Prefer one private store per task merged back by one owner (`python3 -m fh_harbor.sync`, [integrations/harbor](integrations/harbor/README.md)). A store that cannot be opened never stops a task: fh uses a private copy and says why.
 
 ## Platforms
 

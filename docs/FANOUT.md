@@ -29,6 +29,14 @@ The GPU is yours, so the cost that matters is **GPU work and wall time**, not mo
 
 The eval report prints each line as PASS or FAIL with the numbers, and ends with either "keep fan-out on" or "set maxConcurrency to 1 (fan-out off)". The VPS summary (`scripts/vps-validate.sh`) grades the same rule. The constants are `FANOUT_TIME_FACTOR`, `FANOUT_RATE_MARGIN` and `FANOUT_COST_FACTOR` in `src/eval/runner.rs`.
 
+## Consolidation mode (max parallel)
+With `--consolidate` (or `"consolidate": true`) and `maxConcurrency` > 1 the fan-out above gains a single consolidating agent, and tasks that do not split are parallelised too:
+
+- **The plan splits into disjoint parts:** the workers run as before, then ONE consolidating agent receives the task and every worker's report (files touched, edits they asked for in files they did not own), reviews `git diff`, reconciles shared types, imports and names, makes the requested cross-file edits, runs the project checks and finishes. The verification rounds then run as usual.
+- **The plan does not split** (the common case for one issue): up to four scouts run in parallel in plan mode, so they cannot edit. Each takes one angle (Locate, Tests, Impact, Solution) and reports findings and a proposed solution in at most 350 words. The main agent receives all reports, picks the best-supported root cause and solution, implements one coherent change and verifies it. A scout that fails or runs out of budget is left out.
+
+Scouts share the governor with workers (so they respect the `/metrics` backpressure) and a quarter of the task token budget. The result JSON reports `consolidation: {scouts, consolidated}`. Off by default; the rule above decides whether it earns its tokens.
+
 ## Turning it off
 `"maxConcurrency": 1` in `.fh/config.json` (or the user config) disables worker fan-out; everything else is unchanged.
 

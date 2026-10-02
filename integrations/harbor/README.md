@@ -1,6 +1,6 @@
 # fh adapters for Harbor and Pier
 
-Run Frankenstein Harness (`fh`) on Harbor-format benchmarks (Terminal-Bench 4.0, CWE-bench, FrontierSWE v2, any Harbor dataset) and on Pier (DeepSWE v1.1). The full run plan, including the order (fh first, in both modes) and the per-benchmark caveats, is in `docs/VALIDACAO_JG_ENG_TESTS_V2.md`, section 8.
+Run Frankenstein Harness (`fh`) on Harbor-format benchmarks (FrontierSWE v2, any Harbor dataset) and on Pier (DeepSWE v1.1). The full run plan, including the order (fh first, in both modes) and the per-benchmark caveats, is in `docs/VALIDACAO_JG_ENG_TESTS_V2.md`, section 8.
 
 ## Build a static Linux fh
 
@@ -19,10 +19,10 @@ services:
   main:
     extra_hosts: ["host.docker.internal:host-gateway"]
 Y
-harbor run -d terminal-bench@4.0 \
+harbor run -d <dataset>@<versão> \
   --agent fh_harbor.agent:FrankensteinHarness -m openai/frankenstein-v2 \
   --ak binary=target/x86_64-unknown-linux-musl/release/fh \
-  --ak max_concurrency=1 --ak state_dir=$PWD/fh-state/tb4 \
+  --ak max_concurrency=1 --ak state_dir=$PWD/fh-state/frontier \
   --ae FH_ENDPOINT=http://host.docker.internal:8001/v1 \
   --extra-docker-compose host-gateway.yaml --allow-agent-host host.docker.internal -n 4
 ```
@@ -37,6 +37,9 @@ Agent kwargs (`--ak`), or the host variable in brackets:
 | `api_key_env` [`FH_API_KEY_ENV`] | host variable holding the key (default `FH_API_KEY`) |
 | `context_window` [`FH_CONTEXT_WINDOW`] | should equal vLLM `--max-model-len` |
 | `max_concurrency` [`FH_MAX_CONCURRENCY`] | `1` = single agent; `16` = up to 16 workers |
+| `memory` [`FH_MEMORY`] | `off` = no-memory mode: learned skills are still created and improved but never put in the prompt |
+| `consolidate` [`FH_CONSOLIDATE`] | `true` = max-parallel mode (with `max_concurrency` > 1): read-only scouts or file-partitioned workers in parallel, then one agent consolidates all findings and solutions |
+| `mode` | `run` (default, the full harness) or `direct` (`fh direct`: the model alone, no harness; the baseline) |
 | `commit` | `true` to commit the verified result (graders that diff `HEAD`) |
 | `state_dir` [`FH_STATE_DIR`] | host dir with fh's learned skills, shared by all trials (merged under a lock) |
 
