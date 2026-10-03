@@ -4,8 +4,8 @@
     python3 scripts/preflight.py --workdir /workspace/harness-eval [--min-disk-gb 300] [--json out.json]
 
 Prints PASS / WARN / FAIL per check and exits 1 if any check FAILs (abort), 0 otherwise. It only reads and probes:
-it never installs, kills or changes anything. The model repositories probed default to Qwen3.8-27B-NVFP4 @dbb8f445, the MiMo-9B NVFP4+MTP build and the official MiMo-9B;
-override with FH_REPO_BIG, FH_REV_BIG, FH_REPO_SMALL_MTP, FH_REPO_SMALL_BASE.
+it never installs, kills or changes anything. The model repositories probed default to Qwen3.8-27B-NVFP4 @dbb8f445, the MiMo-9B NVFP4+MTP build;
+override with FH_REPO_BIG, FH_REV_BIG, FH_REPO_SMALL_MTP.
 """
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ import sys
 import urllib.request
 
 RESULTS: list[dict] = []
-DEFAULTS = {"FH_REPO_BIG": "nvidia/Qwen3.8-27B-NVFP4", "FH_REPO_SMALL_MTP": "ycui7/MiMo-V2.6-Distill-Qwen-9B-NVFP4-MTP", "FH_REPO_SMALL_BASE": "XiaomiMiMo/MiMo-V2.6-Distill-Qwen-9B"}
+DEFAULTS = {"FH_REPO_BIG": "nvidia/Qwen3.8-27B-NVFP4", "FH_REPO_SMALL_MTP": "ycui7/MiMo-V2.6-Distill-Qwen-9B-NVFP4-MTP"}
 DEFAULT_REV_BIG = "dbb8f445"
 
 
@@ -184,7 +184,7 @@ def network() -> None:
     probe("crates", "https://index.crates.io/config.json", "Rust crates for the fh build and ai-jail", fail_status="WARN")
     probe("npm", "https://registry.npmjs.org/", "OpenCode, Qwen Code, Claude Code installers", fail_status="WARN")
     probe("registry", "https://registry-1.docker.io/v2/", "container images", fail_status="FAIL")
-    for var, label in (("FH_REPO_BIG", "big"), ("FH_REPO_SMALL_MTP", "small_mtp"), ("FH_REPO_SMALL_BASE", "small_base")):
+    for var, label in (("FH_REPO_BIG", "big"), ("FH_REPO_SMALL_MTP", "small_mtp")):
         repo = os.environ.get(var) or DEFAULTS[var]
         if not repo:
             check(f"model.{label}", "WARN", f"{var} not set: model repo not probed", f"export {var}=<org/name>")
