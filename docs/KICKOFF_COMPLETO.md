@@ -44,7 +44,7 @@ B8. Contêiner + Harbor/Pier: rode UMA tarefa pequena do Harbor e UMA do DeepSWE
 B9. Os modos do fh com modelos de verdade: numa tarefa trivial, rode `fh direct`, `fh run`, `fh delegate --no-harness` e `fh delegate` (Qwen3.8-27B como principal, MiMo-9B como operário). Critério: cada um termina com JSON válido, sem exit 2 ou 4; no delegate o MiMo-9B recebe exatamente 1 requisição.
 B10. Exercício de ponta a ponta: 3 exercícios do jg-eng-tests (um .NET, um React, um Angular) em `qwen27b-direto`, com o grader oficial funcionando (e o ensaio sem modelo da fase 0, item 5, para os 130 exercícios). Critério: o grader roda e dá resultado em todos.
 B11. Só se a sessão do ai-jail estiver marcada: com `bwrap` e user namespaces, rode a suíte inteira do ai-jail no HEAD limpo 3 vezes (`cargo test --features test-hooks`, Rust 1.97.1). Critério: passa 3 de 3 e sem PoisonError. Se não, ABORTE a sessão ai-jail (e só ela).
-B12. Disco e tempo: confirme que o espaço livre cobre WORKDIR (~250 GB mais o ai-jail) e escreva a estimativa de tempo restante com base no que mediu (tok/s real, tarefas por hora).
+B12. Disco e tempo: confirme que o espaço livre cobre WORKDIR (mínimo ~250 GB, recomendado 400 a 500 GB; tabela da seção 1.1 do plano) e meça o que baixou e escreva a estimativa de tempo restante com base no que mediu (tok/s real, tarefas por hora).
 B13. DECISÃO DO PORTÃO B: escreva WORKDIR/PORTAO_B.md com cada item, o critério, o resultado com números e o que foi corrigido. Todos aprovados → portão C. Qualquer um impeditivo → ABORTE.
 
 ════════ PROTOCOLO DE ABORTAR ════════

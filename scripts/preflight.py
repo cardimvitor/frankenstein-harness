@@ -196,6 +196,12 @@ def network() -> None:
                 data = json.load(r)
                 files = [s["rfilename"] for s in data.get("siblings", [])]
                 has_w = any(f.endswith(".safetensors") for f in files)
+                try:
+                    with urllib.request.urlopen(urllib.request.Request(url + "?blobs=true", headers={"User-Agent": "fh-preflight"}), timeout=20) as r2:
+                        tot = sum((x.get("size") or 0) for x in json.load(r2).get("siblings", []))
+                    check(f"model.{label}.size", "PASS", f"{tot/1e9:.1f} GB to download")
+                except Exception:
+                    pass
                 check(f"model.{label}", "PASS" if has_w else "FAIL", f"{repo}{('@' + rev) if rev else ''}: {len(files)} files, safetensors {'present' if has_w else 'MISSING'}", "the exact revision must exist; if not, stop and ask the owner")
         except Exception as e:
             check(f"model.{label}", "FAIL", f"{repo}: {getattr(e, 'code', e)}", "repository or revision not reachable (private? renamed? gated?)")
@@ -218,7 +224,7 @@ def aijail() -> None:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--workdir", default=os.environ.get("WORKDIR", "./harness-eval"))
-    ap.add_argument("--min-disk-gb", type=int, default=300)
+    ap.add_argument("--min-disk-gb", type=int, default=300, help="250 is the floor with cleanup, 400-500 recommended (plan section 1.1)")
     ap.add_argument("--json")
     a = ap.parse_args()
     for section in (gpu, lambda: machine(a.workdir, a.min_disk_gb), hogs, takeover, containers, toolchain, network, aijail):

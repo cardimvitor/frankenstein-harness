@@ -28,7 +28,7 @@ Nomes usados aqui: **Frankenstein V2** é o modelo (Qwen3.8-27B NVFP4 + MTP=3 no
 ## CONFIGURAÇÃO (preencher antes de colar)
 - REPO: https://github.com/dfnb/jg-eng-tests, fixado no commit `36cbe4741e5730fae876fae3bff6fa167fb18cb7`. Se o HEAD for outro, pare e avise.
 - GPU: uma RTX PRO 6000 Blackwell 96 GB (SM120), inteira para a avaliação (decisão 9). Modelo fixo: `nvidia/Qwen3.8-27B-NVFP4`, MTP 3 (seção 2.0)
-- WORKDIR: `<ex.: /workspace/harness-eval>` (precisa de ~250 GB livres: as onze configurações têm cópias próprias de cada exercício e de cada tarefa, mais ~30 GB para o checkpoint NVFP4 e as imagens dos benchmarks)
+- WORKDIR: `<ex.: /workspace/harness-eval>` (precisa de ~250 GB livres no mínimo, 400 a 500 GB recomendados; veja a seção 1.1: as onze configurações têm cópias próprias de cada exercício e de cada tarefa, mais ~30 GB para o checkpoint NVFP4 e as imagens dos benchmarks)
 - FRANKENSTEIN_HARNESS: repositório https://github.com/cardimvitor/frankenstein-harness, branch `ccr-3bc51f62-prkdq0`. Compilar com `cargo build --release` e usar `target/release/fh`. Registre o commit.
 - TAREFAS_SIMULTANEAS_TOTAIS (G): rampa de 5 em 5 (5, 10, 15, 20, ...) na calibração, até o tok/s total parar de crescer (menos de 5% de ganho) ou cair, ou o tok/s por tarefa ficar abaixo de 30. É o total de tarefas rodando ao mesmo tempo somando as onze configurações; o teto N_MAX sai da calibração e a execução principal começa nele (seção 5.0a)
 - TIMEOUT_POR_EXERCICIO: 900 s de parede, contando do início da configuração até o processo terminar
@@ -112,6 +112,36 @@ Estimativa de tempo, para planejar. **Nenhum teste é pulado**, então o relógi
    4. **Rede interna e GPU.** `docker network create --internal` vira `podman network create --internal`; reconfira a prova de isolamento da seção 3 item 7 com o runtime escolhido. Os agentes não usam GPU, só o vLLM: se ele rodar em contêiner Podman, use o CDI (`--device nvidia.com/gpu=all`); se rodar direto no host, nada a fazer.
    5. **Registre** o runtime, a versão (`docker --version` ou `podman --version`) e se é root ou rootless no `MANIFEST.json`, e use o mesmo para tudo.
 
+### 1.1 Orçamento de VRAM e de disco (estimativas para planejar; o preflight e o B12 medem os números reais)
+**VRAM (96 GB no total).**
+
+| Item | Pesos | KV cache e extras | Fração configurada |
+|---|---|---|---|
+| Qwen3.8-27B NVFP4 + MTP 3 (servidor 1) | ~16 a 18 GB | o resto do orçamento, ~50 a 55 GB (FP8, contexto 131072; o vLLM imprime a concorrência máxima na subida) | 0,78 (~75 GB) |
+| MiMo-9B NVFP4 + MTP (servidor 2) | ~5 a 6 GB | ~6 a 7 GB | 0,14 (~13 GB) |
+| Folga para contextos CUDA, grafos e picos | | | ~0,08 (~8 GB) |
+| MiMo-9B BF16 oficial (só o controle, sozinho na GPU) | ~19 GB | ~6 a 10 GB | ~0,30 |
+
+Os dois servidores juntos usam 0,92 da placa. Sozinho, o Qwen3.8-27B pode usar 0,90 a 0,95 (varredura do MTP, passe de tempo e fase 8 do Qwen3.8-27B, se o MiMo-9B for desligado). Se o KV do Qwen3.8-27B não der para N_MAX sessões, reduza o contexto do MiMo-9B antes de mexer no 27B.
+
+**Disco (SSD, dentro de WORKDIR; use NVMe se possível).**
+
+| Item | Espaço |
+|---|---|
+| Checkpoint Qwen3.8-27B NVFP4 | ~18 GB |
+| Checkpoint MiMo-9B NVFP4 + MTP | ~8 GB |
+| MiMo-9B BF16 oficial (controle) | ~19 GB |
+| vLLM (ambiente ou imagem, torch, caches de compilação e FlashInfer) | ~15 a 25 GB |
+| Imagens de contêiner do jg-eng-tests (.NET, Node, bases) + caches de NuGet/npm | ~15 a 25 GB |
+| Imagens do DeepSWE v1.1 (113 tarefas, camadas compartilhadas) | incerto, ~40 a 120 GB: meça somando as imagens após o build |
+| Ferramentas, harnesses, Harbor, Pier, Rust, .NET, Node | ~10 a 15 GB |
+| Cópias dos exercícios por configuração (130 × 11) | ~15 a 40 GB **se** apagar `node_modules`, `bin`, `obj` e caches depois da correção e guardar só o diff e o JSON do grader; **mais de 300 GB** se guardar tudo |
+| Logs: proxy (metadados, sem corpo das requisições), `/metrics`, saídas dos agentes | ~10 a 60 GB |
+| Sessão do ai-jail (alvo de cargo, imagens com Rust, 86 tarefas) | ~15 a 30 GB |
+| Margem de segurança | 20% |
+
+**Total: ~250 GB no mínimo com a limpeza descrita; recomendado 400 a 500 GB.** Registre o espaço livre antes e depois de cada download e de cada fase. Apague as cópias dos exercícios (menos o diff e o JSON do grader) logo depois da correção; a regra vale para todas as configurações igualmente.
+
 ## 2. Fase 1: servidor, configuração validada do Frankenstein V2
 
 ### 2.0 Modelo fixo: `nvidia/Qwen3.8-27B-NVFP4`, MTP 3 (decisão 8)
@@ -191,7 +221,7 @@ Servido por um **segundo vLLM**, na porta 8000 do Qwen3.8-27B + 2 (isto é, 8002
 **Divisão da GPU (as duas instâncias convivem durante a sessão inteira).** Com os dois servidores de pé, o Qwen3.8-27B sobe com `--gpu-memory-utilization` 0,78 (em vez dos 0,90 da seção 2.1: **é o único ajuste do Qwen3.8-27B**, justificado pelo MiMo-9B) e o MiMo-9B com ~0,14, deixando ~8% de folga. A verificação da seção 2.0 (122,1 tok/s por fluxo, 75,7% de aceitação, margem de 15%) é refeita **com o servidor do MiMo-9B ligado e ocioso**. Se o Qwen3.8-27B ficar sem KV cache suficiente para N_MAX sessões, reduza o `--max-model-len` e o `--max-num-seqs` do MiMo-9B antes de mexer no Qwen3.8-27B, e registre.
 
 **Varredura de MTP do MiMo-9B (roda em paralelo com a fase 0, a preparação e a calibração do Qwen3.8-27B, mas termina antes da execução principal).**
-1. Candidatos: a `ycui7` NVFP4 com `num_speculative_tokens` = 0, 1, 2, 3, 4 (o 0 é a linha de base sem MTP), mais os candidatos achados na busca acima e o BF16 oficial só com K = 0 (controle de quantização). Cada ponto = uma subida limpa do servidor do MiMo-9B (`--gpu-memory-utilization` 0,14, igual ao uso real), um por vez, na porta 8003.
+1. Candidatos: a `ycui7` NVFP4 com `num_speculative_tokens` = 0, 1, 2, 3, 4 (o 0 é a linha de base sem MTP), mais os candidatos achados na busca acima. Cada ponto = uma subida limpa do servidor do MiMo-9B NVFP4 (`--gpu-memory-utilization` 0,14, igual ao uso real), um por vez, na porta 8003. **O controle BF16 oficial (K = 0) não cabe em 0,14**: os pesos sozinhos ocupam ~19 GB (0,14 de 96 GB são ~13 GB). Rode-o separado, **com o Qwen3.8-27B desligado** (por exemplo logo depois do B2 do portão B, antes do primeiro start do Qwen3.8-27B, ou entre duas fases), com `--gpu-memory-utilization` ~0,30, nos mesmos 24 prompts e 20 exercícios; ele serve só de controle de qualidade da quantização NVFP4 e não de velocidade.
 2. **Contaminação.** A varredura divide a GPU com o Qwen3.8-27B em preparação ou calibração, e a velocidade é afetada. Controle isso de três maneiras: (a) rode os pontos **intercalados** (K=0,1,2,3,4,0,1,2,3,4, 2 passadas) para que a interferência atinja todos por igual; (b) decida por **razões** contra o K=0 medido no mesmo intervalo, nunca por tok/s absoluto; (c) a aceitação do MTP (por posição, do `/metrics`) não depende de contenção. O tok/s absoluto final do MiMo-9B sai do passe de tempo (seção 5.0c), com ele sozinho.
 3. **Velocidade.** Prompts de agente do tipo que o MiMo-9B vai receber (entrada de 8 a 30 mil tokens com prefixo compartilhado, saída de 300 a 2000, 24 prompts fixos), a 1, 4 e 8 fluxos simultâneos (a carga do `qwen27b-mimo9b-fh` e do `mimo9b-direto` na execução principal). Por K: tok/s por fluxo (mediana), tok/s agregado, aceitação por posição e média de tokens aceitos por rodada.
 4. **Assertividade.** A especulação é, em teoria, sem perda de qualidade (a distribuição de saída é preservada), então meça, não suponha: (a) **equivalência a temperatura 0**: nos mesmos 24 prompts, a fração de tokens iguais ao K=0 até a primeira divergência (esperado perto de 100%, com pequenas diferenças numéricas) e quantos prompts divergem antes de 256 tokens; (b) **aprovação em tarefas reais**: `fh direct` com o MiMo-9B em 20 exercícios do jg-eng-tests tirados do **fim** do catálogo, 2 repetições por K, corrigidos pelo grader oficial (resultado descartado do relatório principal, que reexecuta tudo depois), com a amostragem de sempre.
