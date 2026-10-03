@@ -112,6 +112,25 @@ def hogs() -> None:
     check("resources.gpu_settings", "PASS", out or "n/a", "enable persistence mode; leave the power limit at its maximum so the card is not throttled")
 
 
+def takeover() -> None:
+    """Can this session actually take over the whole (rented) machine? Reports; never works around a provider restriction."""
+    uid = os.geteuid()
+    rc, out = sh("sudo -n true 2>&1 && echo sudo-ok")
+    has = uid == 0 or "sudo-ok" in out
+    check("takeover.privileges", "PASS" if has else "FAIL", "root" if uid == 0 else ("passwordless sudo" if has else "not root and no passwordless sudo"), "the takeover needs root: run the session as root or grant passwordless sudo")
+    rc, out = sh("cat /proc/1/cgroup 2>/dev/null | head -1; cat /sys/fs/cgroup/cpu.max 2>/dev/null; cat /sys/fs/cgroup/memory.max 2>/dev/null")
+    lines = out.splitlines()
+    cpu_cap = next((l for l in lines if l.split()[:1] and l.split()[0] != "max" and re.match(r"^\d+ \d+$", l)), "")
+    mem_cap = next((l for l in lines if l.isdigit()), "")
+    check("takeover.cgroup_limits", "PASS" if not (cpu_cap or mem_cap) else "WARN", "no cgroup CPU/memory cap on this session" if not (cpu_cap or mem_cap) else f"cgroup caps: cpu.max={cpu_cap or '-'} memory.max={mem_cap or '-'}", "a cap set by the provider is a limit to REPORT to the owner, not to bypass; if it is ours (systemd slice/user limits), lift it")
+    rc, out = sh("nvidia-smi -q 2>/dev/null | grep -i -E 'MIG Mode|Current  *: *(Enabled|Disabled)|Virtualization Mode' | head -4 | tr '\\n' ' '")
+    check("takeover.gpu_partition", "WARN" if re.search(r"Enabled|vGPU|VGPU", out or "") else "PASS", out or "no MIG/vGPU info", "MIG or vGPU means the card is partitioned: ask the owner whether the whole GPU is meant to be available")
+    rc, out = sh("who 2>/dev/null | awk '{print $1}' | sort -u | tr '\\n' ' '")
+    check("takeover.other_sessions", "PASS", ("logged-in users: " + out) if out else "no other interactive sessions", "other users' sessions are listed in the inventory; the owner decides about them")
+    rc, out = sh("ps -eo user= | sort | uniq -c | sort -rn | head -6 | tr '\\n' ';'")
+    check("takeover.process_owners", "PASS", out or "n/a")
+
+
 def containers() -> None:
     rt = None
     for cand in ("docker", "podman"):
@@ -202,7 +221,7 @@ def main() -> int:
     ap.add_argument("--min-disk-gb", type=int, default=300)
     ap.add_argument("--json")
     a = ap.parse_args()
-    for section in (gpu, lambda: machine(a.workdir, a.min_disk_gb), hogs, containers, toolchain, network, aijail):
+    for section in (gpu, lambda: machine(a.workdir, a.min_disk_gb), hogs, takeover, containers, toolchain, network, aijail):
         section()
     fails = [r for r in RESULTS if r["status"] == "FAIL"]
     warns = [r for r in RESULTS if r["status"] == "WARN"]
